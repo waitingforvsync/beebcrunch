@@ -13,6 +13,7 @@
 #include "richc/file.h"
 
 #include "v0.h"
+#include "v1.h"
 
 #ifdef ENABLE_TESTS
 #include "richc/test.h"
@@ -28,8 +29,17 @@ static rc_array_bytes compress_v0(rc_view_bytes in, rc_arena *arena, rc_arena sc
     return v0_compress(in, arena, scratch).data;
 }
 
+// A codec that cannot represent the input returns an empty array (a valid
+// stream is never smaller than the 2-byte header).
+static rc_array_bytes compress_v1(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
+{
+    v1_compress_result c = v1_compress(in, arena, scratch);
+    return c.ok ? c.data : (rc_array_bytes) {0};
+}
+
 static const codec codecs[] = {
     {.name = "v0", .compress = compress_v0},
+    {.name = "v1", .compress = compress_v1},
 };
 
 static const char *corpus_files[] = {
@@ -94,6 +104,10 @@ static int cmd_compress(const char *infile, const char *outfile, const char *cod
     }
 
     rc_array_bytes packed = c->compress(f.contents.view, &arena, scratch);
+    if (packed.num == 0) {
+        fprintf(stderr, "beebcrunch: %s cannot represent %s\n", c->name, infile);
+        return 1;
+    }
     if (rc_file_save_binary(rc_str_from_cstr(outfile), packed.view) != RC_FILE_OK) {
         fprintf(stderr, "beebcrunch: cannot write %s\n", outfile);
         return 1;
@@ -112,10 +126,12 @@ static int cmd_bench(const char *corpus_dir)
     rc_arena scratch = rc_arena_make_default();
     int rc = 0;
 
-    printf("%-22s %7s %8s %7s %3s\n", "file", "orig", "v0", "ratio", "B");
+    printf("%-22s %7s %8s %8s %7s %3s\n", "file", "orig", "v0", "v1", "ratio", "B");
 
     uint32_t total_orig = 0;
-    uint32_t total_packed = 0;
+    uint32_t total_v0 = 0;
+    uint32_t total_v1 = 0;
+    bool v1_all_ok = true;
     for (uint32_t k = 0; k < sizeof corpus_files / sizeof corpus_files[0]; k++) {
         char path[512];
         snprintf(path, sizeof path, "%s/%s", corpus_dir, corpus_files[k]);
@@ -130,26 +146,45 @@ static int cmd_bench(const char *corpus_dir)
         }
 
         // Numbers for a stream that does not decode back to the original
-        // would be meaningless, so every file is round-tripped here.
-        v0_compress_result c = v0_compress(f.contents.view, &arena, scratch);
-        v0_decompress_result d = v0_decompress(c.data.view, &arena);
-        if (!d.ok || d.data.num != f.contents.num
-            || memcmp(d.data.data, f.contents.data, f.contents.num) != 0) {
-            fprintf(stderr, "bench: %s failed round trip\n", path);
+        // would be meaningless, so every codec is round-tripped here.
+        v0_compress_result c0 = v0_compress(f.contents.view, &arena, scratch);
+        v0_decompress_result d0 = v0_decompress(c0.data.view, &arena);
+        if (!d0.ok || d0.data.num != f.contents.num
+            || memcmp(d0.data.data, f.contents.data, f.contents.num) != 0) {
+            fprintf(stderr, "bench: %s failed v0 round trip\n", path);
             rc = 1;
             continue;
         }
 
-        printf("%-22s %7u %8u %6.1f%% %3u\n", corpus_files[k], f.contents.num,
-               c.data.num, 100.0 * c.data.num / f.contents.num, c.b);
+        v1_compress_result c1 = v1_compress(f.contents.view, &arena, scratch);
+        if (c1.ok) {
+            v1_decompress_result d1 = v1_decompress(c1.data.view, &arena);
+            if (!d1.ok || d1.data.num != f.contents.num
+                || memcmp(d1.data.data, f.contents.data, f.contents.num) != 0) {
+                fprintf(stderr, "bench: %s failed v1 round trip\n", path);
+                rc = 1;
+                continue;
+            }
+            printf("%-22s %7u %8u %8u %6.1f%% %3u\n", corpus_files[k],
+                   f.contents.num, c0.data.num, c1.data.num,
+                   100.0 * c1.data.num / f.contents.num, c1.b);
+            total_v1 += c1.data.num;
+        }
+        else {
+            // v1 cannot represent this input (a run over 256 tokens).
+            printf("%-22s %7u %8u %8s\n", corpus_files[k],
+                   f.contents.num, c0.data.num, "-");
+            v1_all_ok = false;
+        }
         total_orig += f.contents.num;
-        total_packed += c.data.num;
+        total_v0 += c0.data.num;
         rc_arena_free_to(&arena, mark);
     }
 
     if (total_orig > 0) {
-        printf("%-22s %7u %8u %6.1f%%\n", "TOTAL", total_orig, total_packed,
-               100.0 * total_packed / total_orig);
+        printf("%-22s %7u %8u %8u %6.1f%%%s\n", "TOTAL", total_orig, total_v0,
+               total_v1, 100.0 * total_v1 / total_orig,
+               v1_all_ok ? "" : " (v1 total excludes failed files)");
     }
 
     rc_arena_deinit(&scratch);

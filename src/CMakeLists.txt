@@ -2,11 +2,15 @@ add_executable(beebcrunch
     bitreader.c
     bitwriter.c
     main.c
+    matches.c
     v0.c
+    v1.c
     bitreader.h
     bitutils.h
     bitwriter.h
+    matches.h
     v0.h
+    v1.h
 )
 
 target_link_libraries(beebcrunch PRIVATE richc)
