@@ -14,6 +14,7 @@
 
 #include "v0.h"
 #include "v1.h"
+#include "v2.h"
 
 #ifdef ENABLE_TESTS
 #include "richc/test.h"
@@ -37,9 +38,15 @@ static rc_array_bytes compress_v1(rc_view_bytes in, rc_arena *arena, rc_arena sc
     return c.ok ? c.data : (rc_array_bytes) {0};
 }
 
+static rc_array_bytes compress_v2(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
+{
+    return v2_compress(in, arena, scratch).data;
+}
+
 static const codec codecs[] = {
     {.name = "v0", .compress = compress_v0},
     {.name = "v1", .compress = compress_v1},
+    {.name = "v2", .compress = compress_v2},
 };
 
 static const char *corpus_files[] = {
@@ -126,11 +133,12 @@ static int cmd_bench(const char *corpus_dir)
     rc_arena scratch = rc_arena_make_default();
     int rc = 0;
 
-    printf("%-22s %7s %8s %8s %7s %3s\n", "file", "orig", "v0", "v1", "ratio", "B");
+    printf("%-22s %7s %8s %8s %8s %7s\n", "file", "orig", "v0", "v1", "v2", "ratio");
 
     uint32_t total_orig = 0;
     uint32_t total_v0 = 0;
     uint32_t total_v1 = 0;
+    uint32_t total_v2 = 0;
     bool v1_all_ok = true;
     for (uint32_t k = 0; k < sizeof corpus_files / sizeof corpus_files[0]; k++) {
         char path[512];
@@ -157,6 +165,7 @@ static int cmd_bench(const char *corpus_dir)
         }
 
         v1_compress_result c1 = v1_compress(f.contents.view, &arena, scratch);
+        uint32_t v1_size = 0;
         if (c1.ok) {
             v1_decompress_result d1 = v1_decompress(c1.data.view, &arena);
             if (!d1.ok || d1.data.num != f.contents.num
@@ -165,25 +174,41 @@ static int cmd_bench(const char *corpus_dir)
                 rc = 1;
                 continue;
             }
-            printf("%-22s %7u %8u %8u %6.1f%% %3u\n", corpus_files[k],
-                   f.contents.num, c0.data.num, c1.data.num,
-                   100.0 * c1.data.num / f.contents.num, c1.b);
+            v1_size = c1.data.num;
             total_v1 += c1.data.num;
         }
         else {
-            // v1 cannot represent this input (a run over 256 tokens).
-            printf("%-22s %7u %8u %8s\n", corpus_files[k],
-                   f.contents.num, c0.data.num, "-");
             v1_all_ok = false;
+        }
+
+        v2_compress_result c2 = v2_compress(f.contents.view, &arena, scratch);
+        v2_decompress_result d2 = v2_decompress(c2.data.view, &arena);
+        if (!d2.ok || d2.data.num != f.contents.num
+            || memcmp(d2.data.data, f.contents.data, f.contents.num) != 0) {
+            fprintf(stderr, "bench: %s failed v2 round trip\n", path);
+            rc = 1;
+            continue;
+        }
+
+        if (c1.ok) {
+            printf("%-22s %7u %8u %8u %8u %6.1f%%\n", corpus_files[k],
+                   f.contents.num, c0.data.num, v1_size, c2.data.num,
+                   100.0 * c2.data.num / f.contents.num);
+        }
+        else {
+            printf("%-22s %7u %8u %8s %8u %6.1f%%\n", corpus_files[k],
+                   f.contents.num, c0.data.num, "-", c2.data.num,
+                   100.0 * c2.data.num / f.contents.num);
         }
         total_orig += f.contents.num;
         total_v0 += c0.data.num;
+        total_v2 += c2.data.num;
         rc_arena_free_to(&arena, mark);
     }
 
     if (total_orig > 0) {
-        printf("%-22s %7u %8u %8u %6.1f%%%s\n", "TOTAL", total_orig, total_v0,
-               total_v1, 100.0 * total_v1 / total_orig,
+        printf("%-22s %7u %8u %8u %8u %6.1f%%%s\n", "TOTAL", total_orig, total_v0,
+               total_v1, total_v2, 100.0 * total_v2 / total_orig,
                v1_all_ok ? "" : " (v1 total excludes failed files)");
     }
 

@@ -126,13 +126,16 @@ static uint32_t frontier_find(rc_view_node pool, uint32_t head, uint32_t run)
     return RC_INDEX_NONE;
 }
 
-// Stream bits after the B field for split b, or UINT32_MAX when the input
-// cannot be represented (a run over v1_max_run was unavoidable).  When
-// out_tokens is non-NULL the winning token sequence is reconstructed into
-// it.  All working memory - and the tokens - come from arena; the caller
+typedef struct v1_parse_result {
+    rc_array_token tokens;  // filled only when want_tokens
+    uint32_t       bits;    // stream bits after the B field, or UINT32_MAX
+                            // when a run over v1_max_run was unavoidable
+} v1_parse_result;
+
+// All working memory - and the tokens - come from arena; the caller
 // brackets each pass with an arena mark.
-static uint32_t v1_parse(rc_view_bytes in, const matches *m, uint32_t b,
-                         rc_array_token *out_tokens, rc_arena *arena)
+static v1_parse_result v1_parse(rc_view_bytes in, const matches *m, uint32_t b,
+                                bool want_tokens, rc_arena *arena)
 {
     uint32_t n = in.num;
     RC_ASSERT(n > 0);
@@ -238,19 +241,23 @@ static uint32_t v1_parse(rc_view_bytes in, const matches *m, uint32_t b,
             idx = s.next;
         }
     }
+    v1_parse_result res = {
+        .tokens = {0},
+        .bits = best_bits,
+    };
     if (best_idx == RC_INDEX_NONE) {
-        return UINT32_MAX;
+        res.bits = UINT32_MAX;
+        return res;
     }
 
-    if (out_tokens) {
+    if (want_tokens) {
         // Walk the back-links (position, type, run identify a unique live
         // state) and reverse into stream order.
-        *out_tokens = (rc_array_token) {0};
-        rc_array_token_reserve(out_tokens, n, arena);
+        rc_array_token_reserve(&res.tokens, n, arena);
         uint32_t idx = best_idx;
         for (;;) {
             v1_node s = rc_array_node_get(&pool, idx);
-            rc_array_token_push(out_tokens, s.tok, arena);
+            rc_array_token_push(&res.tokens, s.tok, arena);
             if (s.from_index == RC_INDEX_NONE) {
                 break;
             }
@@ -258,9 +265,9 @@ static uint32_t v1_parse(rc_view_bytes in, const matches *m, uint32_t b,
             idx = frontier_find(pool.view, head, s.from_run);
             RC_PANIC(idx != RC_INDEX_NONE);
         }
-        rc_span_token_reverse(out_tokens->span);
+        rc_span_token_reverse(res.tokens.span);
     }
-    return best_bits;
+    return res;
 }
 
 // ---- encoding ----
@@ -335,7 +342,7 @@ v1_compress_result v1_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
     uint32_t best_bits = UINT32_MAX;
     for (uint32_t b = 1; b <= 8; b++) {
         uint32_t mark = scratch.top;
-        uint32_t bits = v1_parse(in, &m, b, NULL, &scratch);
+        uint32_t bits = v1_parse(in, &m, b, false, &scratch).bits;
         rc_arena_free_to(&scratch, mark);
         if (bits < best_bits) {
             best_bits = bits;
@@ -348,14 +355,13 @@ v1_compress_result v1_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
     }
 
     // Rerun the winner to reconstruct its token sequence.
-    rc_array_token tokens = {0};
-    uint32_t bits = v1_parse(in, &m, best_b, &tokens, &scratch);
-    RC_ASSERT(bits == best_bits);
+    v1_parse_result parsed = v1_parse(in, &m, best_b, true, &scratch);
+    RC_ASSERT(parsed.bits == best_bits);
 
     return (v1_compress_result) {
-        .data = encode(in, tokens.view, best_b, arena),
+        .data = encode(in, parsed.tokens.view, best_b, arena),
         .b = best_b,
-        .num_tokens = tokens.num,
+        .num_tokens = parsed.tokens.num,
         .ok = true,
     };
 }

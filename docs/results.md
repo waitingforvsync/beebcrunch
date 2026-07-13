@@ -15,6 +15,7 @@ measured against exomizer raw, the reference target.
 | exomizer raw -c | 96434 | 57.8% | +0.2% |
 | v0 | 100588 | 60.3% | +4.6% |
 | v1 | 99576 | 59.7% | +3.5% |
+| v2 | 98679 | 59.2% | +2.6% |
 
 ## Per-file results
 
@@ -22,20 +23,20 @@ Packed sizes; new codecs add a column.  exo -c is the comparison column
 (exomizer without literal sequences, the closest analogue of a small-
 decoder format).
 
-| file | original | exo -c | v0 | v1 |
-|---|--:|--:|--:|--:|
-| exile-title.bin | 8320 | 4341 | 4575 | 4567 |
-| droid-title.bin | 20480 | 6972 | 7615 | 7607 |
-| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 |
-| repton3-title.bin | 10240 | 4914 | 5212 | 5182 |
-| boomscreen.bin | 16000 | 4427 | 4725 | 4575 |
-| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 |
-| exileb.bin | 24704 | 20744 | 21474 | 21278 |
-| chuckie.bin | 9984 | 6499 | 6712 | 6694 |
-| frak2.bin | 13567 | 8929 | 9225 | 9067 |
-| blurp.bin | 18331 | 11505 | 11903 | 11735 |
-| basic2.rom | 16384 | 12244 | 12630 | 12620 |
-| **TOTAL** | **166810** | **96434** | **100588** | **99576** |
+| file | original | exo -c | v0 | v1 | v2 |
+|---|--:|--:|--:|--:|--:|
+| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4456 |
+| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7190 |
+| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13085 |
+| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5048 |
+| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4454 |
+| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3069 |
+| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21250 |
+| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6678 |
+| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9139 |
+| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11792 |
+| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12518 |
+| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98679** |
 
 ## Exomizer 3.0.2 (raw and raw -c)
 
@@ -99,3 +100,33 @@ Notes:
 - Chosen B spreads over 6..8, one lower than v0 on several files: block
   framing changes the literal/match trade-off, and the joint optimization
   follows it.
+
+## v2
+
+v0's framing (flag bit per token, byte-aligned literals) with exomizer's
+key idea: per-file learned interval tables for match offsets and lengths
+(src/v2.h).  A table is a 5-bit bucket count plus a 4-bit width per
+bucket (~2-17 bytes each); bucket starts accumulate from the minimum
+value, so only the distribution's shape travels.  Offset bucket indices
+are flat 4-bit (up to 16 buckets, indices 0..15), length bucket indices
+Elias gamma (up to 31 buckets - the gamma index has no structural pin) -
+the measured asymmetry.  Single offset context so far.  B is gone: the
+learned buckets subsume it.  Encoder iterates exact-parse <->
+optimal-tables (partition DP over the parse's histograms) to a fixpoint,
+keeping the best true size including table headers.  Measured 2026-07-14:
+98679 (59.2%).
+
+Notes:
+
+- -897 vs v1, +2.6% vs exomizer raw.  The tables recover more than the
+  per-token flag bit costs on most files.
+- The offset index width is a measured optimum, not a guess: 3-bit/8
+  buckets costs +493 bytes, 5-bit/31 buckets +31, 15 buckets under the
+  4-bit index +398.  Every match pays the index, and 16 geometric buckets
+  cover the 64K offset range.  Length buckets raised to 31: -21 bytes.
+- v1 still beats v2 on frak2 (9067 vs 9138) and blurp (11735 vs 11796):
+  match-dense files feel the flag-bit tax most, exactly where block
+  framing shines.  The planned length-conditioned offset contexts attack
+  the same files from the table side.
+- The parse is exact for any fixed tables (test-enforced); the fixpoint
+  over tables is a heuristic, as in exomizer.
