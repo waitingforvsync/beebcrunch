@@ -28,10 +28,24 @@ matches scan_matches(rc_view_bytes in, rc_arena *arena)
     }
     rc_array_u32_resize(&m.prev, n ? n : 1, arena);
     rc_array_u32_resize(&m.start, n + 1, arena);
+    rc_array_u32_resize(&m.near1, n ? n : 1, arena);
     rc_array_token_reserve(&m.bp, n ? n : 1, arena);
+
+    // The separate length-1 chain: nearest previous occurrence of each
+    // single byte, for "repeat the byte from d ago" candidates.
+    uint32_t last_seen[256];
+    for (uint32_t b = 0; b < 256; b++) {
+        last_seen[b] = RC_INDEX_NONE;
+    }
 
     for (uint32_t pos = 0; pos < n; pos++) {
         rc_array_u32_set(&m.start, pos, m.bp.num);
+
+        uint8_t byte = rc_view_bytes_get(in, pos);
+        uint32_t seen = last_seen[byte];
+        rc_array_u32_set(&m.near1, pos, seen == RC_INDEX_NONE ? 0 : pos - seen);
+        last_seen[byte] = pos;
+
         if (pos + 1 < n) {
             uint32_t key = match_key(in, pos);
             // Never extend past the input or the format's length cap.
@@ -78,3 +92,58 @@ matches scan_matches(rc_view_bytes in, rc_arena *arena)
     rc_array_u32_set(&m.start, n, m.bp.num);
     return m;
 }
+
+// ------------------------------------------------------------------
+//  tests
+// ------------------------------------------------------------------
+
+#ifdef ENABLE_TESTS
+
+#include "richc/arena.h"
+#include "richc/test.h"
+
+RC_TEST(matches, token_tagging)
+{
+    token literal = {
+        .length = 1,
+        .offset = 0,
+    };
+    token repeat = {
+        .length = 1,
+        .offset = 7,
+    };
+    token match = {
+        .length = 5,
+        .offset = 7,
+    };
+    RC_CHECK_TRUE(token_is_literal(literal));
+    RC_CHECK_FALSE(token_is_literal(repeat));
+    RC_CHECK_FALSE(token_is_literal(match));
+}
+
+RC_TEST_GROUP_DATA(matches) {
+    rc_arena a;
+};
+
+RC_TEST_GROUP_INIT(matches, fix)
+{
+    fix->a = rc_arena_make_default();
+}
+
+RC_TEST_GROUP_DEINIT(matches, fix)
+{
+    rc_arena_deinit(&fix->a);
+}
+
+RC_TEST_STEP(matches, near1_distances, fix)
+{
+    // a b a a c b: nearest same-byte distances 0,0,2,1,0,4
+    uint8_t data[6] = {'a', 'b', 'a', 'a', 'c', 'b'};
+    matches m = scan_matches((rc_view_bytes) RC_VIEW(data), &fix->a);
+    uint32_t expect[6] = {0, 0, 2, 1, 0, 4};
+    for (uint32_t i = 0; i < 6; i++) {
+        RC_CHECK(rc_array_u32_get(&m.near1, i), ==, expect[i]);
+    }
+}
+
+#endif // ENABLE_TESTS

@@ -152,7 +152,7 @@ static v3_parse_result v3_parse(rc_view_bytes in, const matches *m,
     // the first literal.
     frontier_insert(&pool, &heads[v3_lit], 1, 1, 8, RC_INDEX_NONE, v3_lit, 0, (token) {
         .length = 1,
-        .literal = rc_view_bytes_get(in, 0),
+        .offset = 0,
     }, arena);
 
     for (uint32_t i = 1; i < n; i++) {
@@ -168,7 +168,7 @@ static v3_parse_result v3_parse(rc_view_bytes in, const matches *m,
                 // fresh literal block.
                 token lit = {
                     .length = 1,
-                    .literal = rc_view_bytes_get(in, i),
+                    .offset = 0,
                 };
                 if (type == v3_lit) {
                     if (s.run < v3_max_run) {
@@ -336,7 +336,7 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
         for (uint32_t k = i; k < j; k++) {
             token t = rc_view_token_get(tokens, k);
             if (is_lit) {
-                bitwriter_byte(&w, t.literal);
+                bitwriter_byte(&w, rc_view_bytes_get(in, total));
             }
             else {
                 // Length first (the decoder needs it to pick the offset
@@ -768,7 +768,7 @@ static void brute_parses(rc_view_bytes in, const matches *m,
     // Literal step.
     rc_array_token_push(seq, (token) {
         .length = 1,
-        .literal = rc_view_bytes_get(in, pos),
+        .offset = 0,
     }, arena);
     brute_parses(in, m, tables, seq, pos + 1, best, arena);
     rc_array_token_pop(seq);

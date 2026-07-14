@@ -17,6 +17,7 @@ measured against exomizer raw, the reference target.
 | v1 | 99576 | 59.7% | +3.5% |
 | v2 | 98543 | 59.1% | +2.4% |
 | v3 | 97701 | 58.6% | +1.6% |
+| v4 | 97829 | 58.6% | +1.7% |
 
 ## Per-file results
 
@@ -24,20 +25,20 @@ Packed sizes; new codecs add a column.  exo -c is the comparison column
 (exomizer without literal sequences, the closest analogue of a small-
 decoder format).
 
-| file | original | exo -c | v0 | v1 | v2 | v3 |
-|---|--:|--:|--:|--:|--:|--:|
-| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4465 | 4453 |
-| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 | 7160 |
-| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 | 12843 |
-| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 | 5013 |
-| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 | 4321 |
-| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 | 3014 |
-| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21204 | 21089 |
-| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6674 | 6664 |
-| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9149 | 9008 |
-| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 | 11625 |
-| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12508 | 12511 |
-| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98543** | **97701** |
+| file | original | exo -c | v0 | v1 | v2 | v3 | v4 |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4465 | 4453 | 4445 |
+| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 | 7160 | 7096 |
+| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 | 12843 | 13035 |
+| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 | 5013 | 4982 |
+| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 | 4321 | 4450 |
+| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 | 3014 | 3049 |
+| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21204 | 21089 | 21049 |
+| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6674 | 6664 | 6582 |
+| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9149 | 9008 | 9027 |
+| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 | 11625 | 11634 |
+| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12508 | 12511 | 12480 |
+| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98543** | **97701** | **97829** |
 
 ## Exomizer 3.0.2 (raw and raw -c)
 
@@ -156,4 +157,30 @@ Notes:
   tables could not touch, tables shrink the match fields the blocks could
   not touch.
 - Remaining known structural gap to exomizer: length-1 matches (measured
-  worth 2605 bytes to exomizer on this corpus).
+  worth 2605 bytes to exomizer on this corpus) - addressed by v4.
+
+## v4
+
+v2's shape plus length-1 matches (src/v4.h): the length table's minimum
+becomes 1, and a fourth, deliberately tiny offset table (flat 2-bit
+index, at most 4 buckets) serves "repeat the byte from d ago" matches -
+profitable only at small offsets, which the table learns.  Candidates
+come from a separate length-1 chain in the shared match scan: the
+nearest previous occurrence of each byte (near1).  Decode is v2's loop
+with one more context row.  The shared token type dropped its union for
+this: {length, offset}, literal iff length == 1 && offset == 0, with
+literal bytes read from the input at encode time (v0-v3 byte-identical
+after the change).  Measured 2026-07-14: 97829 (58.6%).
+
+Notes:
+
+- Length-1 matches earn 714 bytes over v2 on the same chassis - real,
+  but far less than the 2605 they are worth to exomizer, whose economy
+  differs (its length index for 1 is a single gamma bit against our
+  learned bucket, and its parse can use them more aggressively).
+- v4 does NOT beat v3 overall (97829 vs 97701), but the per-file split
+  is complementary: v4 wins the dense executables (chuckie -82,
+  droid -64, exileb -40 vs v3), v3 wins the long-run graphics
+  (boomscreen, blurpscreen, ravenskull) where block framing removes the
+  flag-bit tax.  Blocks + tables + length-1 in one codec is the obvious
+  next combination.

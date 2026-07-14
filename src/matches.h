@@ -14,6 +14,8 @@
 #ifndef MATCHES_H_
 #define MATCHES_H_
 
+#include <stdbool.h>
+
 #include "richc/array/u32.h"
 #include "richc/bytes.h"
 
@@ -22,15 +24,16 @@ enum {
     max_match = 256,    // a 6502 length byte wraps 256 to 0; 0 is invalid
 };
 
-// A token: length == 0 -> uninitialized, length == 1 -> literal (the byte
-// itself rides along), length > 1 -> match
+// A token: length == 0 -> uninitialized; length == 1 with offset == 0 ->
+// literal (the byte is read from the input at its position); otherwise a
+// match of that length at that offset (length 1 matches exist: repeat the
+// byte from offset ago)
 typedef struct token {
     uint16_t length;
-    union {
-        uint8_t  literal;
-        uint16_t offset;
-    };
+    uint16_t offset;
 } token;
+
+static inline bool token_is_literal(token t) { return t.length == 1 && t.offset == 0; }
 
 #define RC_ARRAY_TYPE token
 #define RC_ARRAY_NAME token
@@ -42,6 +45,8 @@ typedef struct matches {
     rc_array_u32   prev;        // per-position chain links
     rc_array_u32   start;       // n+1: breakpoint range per position
     rc_array_token bp;          // breakpoint pool
+    rc_array_u32   near1;       // distance to the previous occurrence of
+                                // the byte at each position, 0 when none
 } matches;
 
 matches scan_matches(rc_view_bytes in, rc_arena *arena);

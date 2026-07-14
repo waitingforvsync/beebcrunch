@@ -45,7 +45,7 @@ static uint32_t dp_pass(rc_view_bytes in, const matches *m, uint32_t b,
             if (arrival.num) {
                 rc_span_token_set(arrival, i + 1, (token) {
                     .length = 1,
-                    .literal = rc_view_bytes_get(in, i),
+                    .offset = 0,
                 });
             }
         }
@@ -102,7 +102,7 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens, uint32_t b,
         token t = rc_view_token_get(tokens, k);
         if (t.length == 1) {
             bitwriter_bits(&w, 0, 1);
-            bitwriter_byte(&w, t.literal);
+            bitwriter_byte(&w, rc_view_bytes_get(in, total));
         }
         else {
             // Match: offset first (gamma-coded high part, then the B raw
