@@ -15,7 +15,7 @@ measured against exomizer raw, the reference target.
 | exomizer raw -c | 96434 | 57.8% | +0.2% |
 | v0 | 100588 | 60.3% | +4.6% |
 | v1 | 99576 | 59.7% | +3.5% |
-| v2 | 98679 | 59.2% | +2.6% |
+| v2 | 98543 | 59.1% | +2.4% |
 
 ## Per-file results
 
@@ -25,18 +25,18 @@ decoder format).
 
 | file | original | exo -c | v0 | v1 | v2 |
 |---|--:|--:|--:|--:|--:|
-| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4456 |
-| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7190 |
-| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13085 |
-| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5048 |
-| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4454 |
-| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3069 |
-| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21250 |
-| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6678 |
-| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9139 |
-| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11792 |
-| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12518 |
-| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98679** |
+| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4465 |
+| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 |
+| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 |
+| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 |
+| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 |
+| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 |
+| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21204 |
+| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6674 |
+| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9149 |
+| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 |
+| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12508 |
+| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98543** |
 
 ## Exomizer 3.0.2 (raw and raw -c)
 
@@ -110,16 +110,21 @@ bucket (~2-17 bytes each); bucket starts accumulate from the minimum
 value, so only the distribution's shape travels.  Offset bucket indices
 are flat 4-bit (up to 16 buckets, indices 0..15), length bucket indices
 Elias gamma (up to 31 buckets - the gamma index has no structural pin) -
-the measured asymmetry.  Single offset context so far.  B is gone: the
-learned buckets subsume it.  Encoder iterates exact-parse <->
-optimal-tables (partition DP over the parse's histograms) to a fixpoint,
-keeping the best true size including table headers.  Measured 2026-07-14:
-98679 (59.2%).
+the measured asymmetry.  Offsets are coded through one of three tables
+conditioned on the match length (len 2 / len 3 / len >= 4), so matches
+are length-then-offset in the stream.  B is gone: the learned buckets
+subsume it.  Encoder iterates exact-parse <-> optimal-tables (partition
+DP over the parse's histograms) to a fixpoint, keeping the best true size
+including table headers.  Measured 2026-07-14: 98543 (59.1%).
 
 Notes:
 
-- -897 vs v1, +2.6% vs exomizer raw.  The tables recover more than the
+- -1033 vs v1, +2.4% vs exomizer raw.  The tables recover more than the
   per-token flag bit costs on most files.
+- The length-conditioned offset contexts gained 136 bytes overall but
+  cost a little on exile-title and frak2: two extra table headers (~18
+  bytes) are not always recovered when the per-class offset distributions
+  are similar.
 - The offset index width is a measured optimum, not a guess: 3-bit/8
   buckets costs +493 bytes, 5-bit/31 buckets +31, 15 buckets under the
   4-bit index +398.  Every match pays the index, and 16 geometric buckets

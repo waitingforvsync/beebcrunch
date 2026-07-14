@@ -17,10 +17,15 @@ enum {
     v2_table_capacity  = 32,    // storage bound; also the memo stride
     v2_off_max_buckets = 16,    // addressable by the flat offset index
     v2_len_max_buckets = 31,    // gamma index has no structural pin
+    v2_num_contexts    = 3,     // offset contexts: len==2, len==3, len>=4
     v2_iterations      = 8,     // parse <-> table refinement rounds
     v2_off_index_bits  = 4,     // flat offset bucket index width
     v2_big_cost        = 1000000,
 };
+
+// Short matches overwhelmingly use short offsets, so each length class
+// gets its own tuned offset table (exomizer's context split)
+static uint32_t len_ctx(uint32_t length) { return (length == 2) ? 0 : (length == 3) ? 1 : 2; }
 
 // ---- learned interval tables ----
 //
@@ -40,7 +45,7 @@ typedef struct v2_table {
 } v2_table;
 
 typedef struct v2_tables {
-    v2_table off;
+    v2_table off[v2_num_contexts];
     v2_table len;
 } v2_tables;
 
@@ -295,24 +300,33 @@ static uint32_t dp_pass(rc_view_bytes in, const matches *m, const v2_tables *tab
         }
 
         // Match edges: every truncation of every breakpoint the tables can
-        // encode.  Coverage is contiguous from the minimum, so the first
-        // uncovered offset ends the (offset-ascending) breakpoint list,
-        // and the first uncovered length ends the truncation loop.
+        // encode.  The offset cost depends on the length class, so hoist
+        // all three per breakpoint.  Coverage is contiguous from each
+        // table's minimum, so when every context leaves this offset
+        // uncovered, every farther breakpoint is uncovered too.
         uint32_t lo = min_match - 1;
         uint32_t end = rc_array_u32_get(&m->start, i + 1);
         for (uint32_t k = rc_array_u32_get(&m->start, i); k < end; k++) {
             token t = rc_array_token_get(&m->bp, k);
-            uint32_t off_cost = table_cost(&tables->off, t.offset);
-            if (off_cost >= v2_big_cost) {
+            uint32_t off_cost[v2_num_contexts];
+            bool any_covered = false;
+            for (uint32_t c = 0; c < v2_num_contexts; c++) {
+                off_cost[c] = table_cost(&tables->off[c], t.offset);
+                any_covered = any_covered || off_cost[c] < v2_big_cost;
+            }
+            if (!any_covered) {
                 break;
             }
-            uint32_t base = here + 1 + off_cost;
             for (uint32_t len = lo + 1; len <= t.length; len++) {
                 uint32_t len_cost = table_cost(&tables->len, len);
                 if (len_cost >= v2_big_cost) {
                     break;
                 }
-                uint32_t c = base + len_cost;
+                uint32_t oc = off_cost[len_ctx(len)];
+                if (oc >= v2_big_cost) {
+                    continue;
+                }
+                uint32_t c = here + 1 + oc + len_cost;
                 if (c < rc_array_u32_get(&cost, i + len)) {
                     rc_array_u32_set(&cost, i + len, c);
                     if (arrival.num) {
@@ -340,7 +354,7 @@ static uint32_t data_bits(rc_view_token tokens, const v2_tables *tables)
             bits += 1 + 8;
         }
         else {
-            bits += 1 + table_cost(&tables->off, t.offset)
+            bits += 1 + table_cost(&tables->off[len_ctx(t.length)], t.offset)
                   + table_cost(&tables->len, t.length);
         }
     }
@@ -360,7 +374,9 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
     rc_array_bytes_push(&out, (uint8_t)(in.num >> 8), arena);
 
     bitwriter w = bitwriter_make(&out, arena);
-    write_table(&w, &tables->off);
+    for (uint32_t c = 0; c < v2_num_contexts; c++) {
+        write_table(&w, &tables->off[c]);
+    }
     write_table(&w, &tables->len);
 
     uint32_t total = 0;
@@ -371,10 +387,11 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
             bitwriter_byte(&w, t.literal);
         }
         else {
-            // Match: offset then length, each through its table.
+            // Match: length first (the decoder needs it to pick the offset
+            // context), then the offset through that context's table.
             bitwriter_bits(&w, 1, 1);
-            write_value(&w, &tables->off, t.offset);
             write_value(&w, &tables->len, t.length);
+            write_value(&w, &tables->off[len_ctx(t.length)], t.offset);
         }
         total += t.length;
     }
@@ -387,24 +404,26 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
 static v2_tables seed_tables(void)
 {
     v2_tables t = {
-        .off = {
-            .minval = 1,
-            .num_buckets = 16,
-            .index_bits = v2_off_index_bits,
-        },
         .len = {
             .minval = 2,
             .num_buckets = 9,
             .index_bits = 0,
         },
     };
-    for (uint32_t i = 0; i < t.off.num_buckets; i++) {
-        t.off.width[i] = i;
+    for (uint32_t c = 0; c < v2_num_contexts; c++) {
+        t.off[c] = (v2_table) {
+            .minval = 1,
+            .num_buckets = 16,
+            .index_bits = v2_off_index_bits,
+        };
+        for (uint32_t i = 0; i < t.off[c].num_buckets; i++) {
+            t.off[c].width[i] = i;
+        }
+        table_build_starts(&t.off[c]);
     }
     for (uint32_t i = 0; i < t.len.num_buckets; i++) {
         t.len.width[i] = i;
     }
-    table_build_starts(&t.off);
     table_build_starts(&t.len);
     return t;
 }
@@ -450,38 +469,44 @@ v2_compress_result v2_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
         for (uint32_t v = 0; v <= max_match; v++) {
             rc_array_u32_set(&len_hist, v, 0);
         }
-        rc_array_u32 off_hist = {0};
-        rc_array_u32_resize(&off_hist, n + 1, &scratch);
-        for (uint32_t v = 0; v <= n; v++) {
-            rc_array_u32_set(&off_hist, v, 0);
+        rc_array_u32 off_hist[v2_num_contexts];
+        for (uint32_t c = 0; c < v2_num_contexts; c++) {
+            off_hist[c] = (rc_array_u32) {0};
+            rc_array_u32_resize(&off_hist[c], n + 1, &scratch);
+            for (uint32_t v = 0; v <= n; v++) {
+                rc_array_u32_set(&off_hist[c], v, 0);
+            }
         }
         uint32_t max_len = 0;
-        uint32_t max_off = 0;
+        uint32_t max_off[v2_num_contexts] = {0};
         for (uint32_t k = 0; k < tokens.num; k++) {
             token t = rc_view_token_get(tokens.view, k);
             if (t.length == 1) {
                 continue;
             }
+            uint32_t c = len_ctx(t.length);
             rc_array_u32_set(&len_hist, t.length, rc_array_u32_get(&len_hist, t.length) + 1);
-            rc_array_u32_set(&off_hist, t.offset, rc_array_u32_get(&off_hist, t.offset) + 1);
+            rc_array_u32_set(&off_hist[c], t.offset, rc_array_u32_get(&off_hist[c], t.offset) + 1);
             if (t.length > max_len) {
                 max_len = t.length;
             }
-            if (t.offset > max_off) {
-                max_off = t.offset;
+            if (t.offset > max_off[c]) {
+                max_off[c] = t.offset;
             }
         }
 
         // ...and rebuild optimal tables for exactly that usage.
         v2_tables next = {
-            .off = optimize_table(off_hist.view, 1, max_off, v2_off_index_bits,
-                                  v2_off_max_buckets, scratch),
             .len = optimize_table(len_hist.view, 2, max_len, 0,
                                   v2_len_max_buckets, scratch),
         };
-
-        uint32_t bits = table_transmit_bits(&next.off) + table_transmit_bits(&next.len)
-                      + data_bits(tokens.view, &next);
+        uint32_t bits = table_transmit_bits(&next.len);
+        for (uint32_t c = 0; c < v2_num_contexts; c++) {
+            next.off[c] = optimize_table(off_hist[c].view, 1, max_off[c],
+                                         v2_off_index_bits, v2_off_max_buckets, scratch);
+            bits += table_transmit_bits(&next.off[c]);
+        }
+        bits += data_bits(tokens.view, &next);
         if (bits < best_bits) {
             best_bits = bits;
             best_tokens = tokens;
@@ -564,15 +589,19 @@ v2_decompress_result v2_decompress(rc_view_bytes comp, rc_arena *arena)
                  | ((uint32_t)rc_view_bytes_get(comp, 1) << 8);
 
     bitreader r = bitreader_make(rc_view_bytes_get_tail(comp, 2));
-    table_result off = read_table(&r, 1, v2_off_index_bits, v2_off_max_buckets);
+    v2_tables tables;
+    for (uint32_t c = 0; c < v2_num_contexts; c++) {
+        table_result off = read_table(&r, 1, v2_off_index_bits, v2_off_max_buckets);
+        if (!off.ok) {
+            return fail();
+        }
+        tables.off[c] = off.table;
+    }
     table_result len_table = read_table(&r, 2, 0, v2_len_max_buckets);
-    if (!off.ok || !len_table.ok || r.fault != bit_fault_ok) {
+    if (!len_table.ok || r.fault != bit_fault_ok) {
         return fail();
     }
-    v2_tables tables = {
-        .off = off.table,
-        .len = len_table.table,
-    };
+    tables.len = len_table.table;
 
     rc_array_bytes out = {0};
     rc_array_bytes_reserve(&out, len ? len : 1, arena);
@@ -587,12 +616,15 @@ v2_decompress_result v2_decompress(rc_view_bytes comp, rc_arena *arena)
             rc_array_bytes_push(&out, v, arena);
         }
         else {
-            // Match: offset then length through the tables, then validate
-            // both against what has actually been produced so far - the
-            // stream is untrusted.
-            value_result offset = read_value(&r, &tables.off);
+            // Match: length first (it selects the offset context), then
+            // the offset, then validate both against what has actually
+            // been produced so far - the stream is untrusted.
             value_result length = read_value(&r, &tables.len);
-            if (!offset.ok || !length.ok || r.fault != bit_fault_ok) {
+            if (!length.ok || r.fault != bit_fault_ok) {
+                return fail();
+            }
+            value_result offset = read_value(&r, &tables.off[len_ctx(length.value)]);
+            if (!offset.ok || r.fault != bit_fault_ok) {
                 return fail();
             }
             if (offset.value > out.num || out.num + length.value > len) {
@@ -970,14 +1002,14 @@ static uint32_t brute_suffix_bits(rc_view_bytes in, const matches *m,
     uint32_t end = rc_array_u32_get(&m->start, pos + 1);
     for (uint32_t k = rc_array_u32_get(&m->start, pos); k < end; k++) {
         token t = rc_array_token_get(&m->bp, k);
-        uint32_t off_cost = table_cost(&tables->off, t.offset);
-        if (off_cost >= v2_big_cost) {
-            break;
-        }
         for (uint32_t len = lo + 1; len <= t.length; len++) {
             uint32_t len_cost = table_cost(&tables->len, len);
             if (len_cost >= v2_big_cost) {
                 break;
+            }
+            uint32_t off_cost = table_cost(&tables->off[len_ctx(len)], t.offset);
+            if (off_cost >= v2_big_cost) {
+                continue;
             }
             uint32_t c = 1 + off_cost + len_cost
                        + brute_suffix_bits(in, m, tables, pos + len);

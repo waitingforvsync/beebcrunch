@@ -1,8 +1,8 @@
 /*
- *  v2.h - the v2 codec: learned bucket tables, single offset context
+ *  v2.h - the v2 codec: learned bucket tables, length-conditioned offsets
  *
  *  Container: [u16 uncompressed_len, little-endian, raw bytes]
- *             [offset table][length table][token stream].
+ *             [offset table x3][length table][token stream].
  *
  *  Instead of universal Elias gamma codes, match offsets and lengths are
  *  coded through per-file learned interval tables (exomizer's key idea).
@@ -13,10 +13,15 @@
  *  distribution, not a symbol tree.  K == 0 only occurs for tables that
  *  are never consulted (an input with no matches).
  *
+ *  Offsets are coded through one of three tables conditioned on the match
+ *  length (len == 2, len == 3, len >= 4): short matches overwhelmingly
+ *  use short offsets, so each class gets its own tuned table.
+ *
  *  Token: 1 flag bit; 0 = literal (one byte, byte-aligned quick path),
- *  1 = match, offset then length.  Offset: flat 4-bit bucket index, then
- *  that bucket's width in raw extra bits.  Length: Elias gamma(index + 1)
- *  bucket index, then extra bits.  The asymmetry is measured: length
+ *  1 = match, length then offset (the decoder needs the length to select
+ *  the offset context).  Length: Elias gamma(index + 1) bucket index,
+ *  then extra bits.  Offset: flat 4-bit bucket index, then that bucket's
+ *  width in raw extra bits.  The index asymmetry is measured: length
  *  bucket usage is heavily skewed (gamma wins), offset bucket usage is
  *  near-uniform (flat wins).  Extra fields wider than 8 bits are carried
  *  as two <= 8-bit pieces.
