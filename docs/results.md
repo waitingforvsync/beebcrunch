@@ -16,6 +16,7 @@ measured against exomizer raw, the reference target.
 | v0 | 100588 | 60.3% | +4.6% |
 | v1 | 99576 | 59.7% | +3.5% |
 | v2 | 98543 | 59.1% | +2.4% |
+| v3 | 97701 | 58.6% | +1.6% |
 
 ## Per-file results
 
@@ -23,20 +24,20 @@ Packed sizes; new codecs add a column.  exo -c is the comparison column
 (exomizer without literal sequences, the closest analogue of a small-
 decoder format).
 
-| file | original | exo -c | v0 | v1 | v2 |
-|---|--:|--:|--:|--:|--:|
-| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4465 |
-| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 |
-| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 |
-| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 |
-| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 |
-| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 |
-| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21204 |
-| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6674 |
-| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9149 |
-| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 |
-| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12508 |
-| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98543** |
+| file | original | exo -c | v0 | v1 | v2 | v3 |
+|---|--:|--:|--:|--:|--:|--:|
+| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4465 | 4453 |
+| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 | 7160 |
+| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 | 12843 |
+| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 | 5013 |
+| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 | 4321 |
+| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 | 3014 |
+| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21204 | 21089 |
+| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6674 | 6664 |
+| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9149 | 9008 |
+| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 | 11625 |
+| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12508 | 12511 |
+| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98543** | **97701** |
 
 ## Exomizer 3.0.2 (raw and raw -c)
 
@@ -135,3 +136,24 @@ Notes:
   the same files from the table side.
 - The parse is exact for any fixed tables (test-enforced); the fixpoint
   over tables is a heuristic, as in exomizer.
+
+## v3
+
+v2's learned tables carried by v1's block framing (src/v3.h): alternating
+literal/match blocks with Elias gamma counts in [1, 256] replace the
+per-token flag bit, and match lengths/offsets go through the shared
+per-file tables (three offset contexts by length class, length-then-offset
+per match).  The parse combines v1's Pareto frontier (block headers make
+token cost run-dependent) with v2's parse <-> tables fixpoint; runs over
+256 tokens remain unrepresentable (parse avoids them; ok == false when
+impossible, as v1).  Measured 2026-07-14: 97701 (58.6%).
+
+Notes:
+
+- -842 vs v2; +1.6% vs exomizer raw, +1.3% vs raw -c.  Beats v2 on ten of
+  eleven files (basic2.rom +3).  All corpus files representable.
+- The combination stacks cleanly: blocks remove the flag-bit tax the
+  tables could not touch, tables shrink the match fields the blocks could
+  not touch.
+- Remaining known structural gap to exomizer: length-1 matches (measured
+  worth 2605 bytes to exomizer on this corpus).
