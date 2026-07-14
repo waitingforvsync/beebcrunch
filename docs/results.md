@@ -18,6 +18,7 @@ measured against exomizer raw, the reference target.
 | v2 | 98543 | 59.1% | +2.4% |
 | v3 | 97701 | 58.6% | +1.6% |
 | v4 | 97829 | 58.6% | +1.7% |
+| v5 | 97919 | 58.7% | +1.8% |
 
 ## Per-file results
 
@@ -25,20 +26,20 @@ Packed sizes; new codecs add a column.  exo -c is the comparison column
 (exomizer without literal sequences, the closest analogue of a small-
 decoder format).
 
-| file | original | exo -c | v0 | v1 | v2 | v3 | v4 |
-|---|--:|--:|--:|--:|--:|--:|--:|
-| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4465 | 4453 | 4445 |
-| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 | 7160 | 7096 |
-| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 | 12843 | 13035 |
-| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 | 5013 | 4982 |
-| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 | 4321 | 4450 |
-| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 | 3014 | 3049 |
-| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21204 | 21089 | 21049 |
-| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6674 | 6664 | 6582 |
-| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9149 | 9008 | 9027 |
-| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 | 11625 | 11634 |
-| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12508 | 12511 | 12480 |
-| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98543** | **97701** | **97829** |
+| file | original | exo -c | v0 | v1 | v2 | v3 | v4 | v5 |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4465 | 4453 | 4445 | 4464 |
+| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 | 7160 | 7096 | 7120 |
+| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 | 12843 | 13035 | 12923 |
+| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 | 5013 | 4982 | 4991 |
+| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 | 4321 | 4450 | 4331 |
+| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 | 3014 | 3049 | 3005 |
+| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21204 | 21089 | 21049 | 21188 |
+| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6674 | 6664 | 6582 | 6621 |
+| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9149 | 9008 | 9027 | 9032 |
+| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 | 11625 | 11634 | 11639 |
+| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12508 | 12511 | 12480 | 12605 |
+| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98543** | **97701** | **97829** | **97919** |
 
 ## Exomizer 3.0.2 (raw and raw -c)
 
@@ -184,3 +185,42 @@ Notes:
   (boomscreen, blurpscreen, ravenskull) where block framing removes the
   flag-bit tax.  Blocks + tables + length-1 in one codec is the obvious
   next combination.
+
+## v5
+
+v4's five-table match coding (length-1 matches included) carried by v1's
+block framing (src/v5.h): alternating literal/match blocks with Elias
+gamma counts, a length-1 match being a match token that sits in - and
+extends - match blocks.  The frontier parse gains one edge per position
+(near1 through the tiny off1 table).  Measured 2026-07-14: 97919 (58.7%)
+- WORSE than both parents (v3 97701, v4 97829).  The expected combination
+did not stack.
+
+Notes:
+
+- Why length-1 matches pay less here: under flag bits a literal costs a
+  full 9 bits, so a ~5-7 bit length-1 match saves ~2-4; under blocks a
+  literal inside a literal run costs ~8 bits plus a fractional header, so
+  the same match saves ~1 bit or nothing unless it extends a match block.
+  Meanwhile the costs stay: the length table's minval drops to 1 for
+  every file (bucket space all lengths pay for), plus the off1 header.
+  v5 beats v3 only where matches are dense (blurpscreen -9, exileb would
+  lose, chuckie etc. go to v4) and loses the graphics wins that made v3
+  best (ravenskull +80, boomscreen +10) and basic2.rom (+94, fixpoint
+  converging worse).
+- Length-1 matches do fix v3's pathology: inputs with no repeated pair
+  but nearby repeated bytes (unencodable under v3's 256-token literal
+  run cap) become representable - test-enforced.
+- Block counts through learned interval tables (two extra tables, one
+  per block type) measured WORSE still: 98260 (+341 vs gamma counts,
+  worse on every file).  The table family cannot express plain gamma:
+  its bucket index is itself gamma coded, so a table-coded count pays
+  gamma(index) + extras where raw gamma pays gamma(count) directly (a
+  count of 2 costs 4 bits vs 3), and two more headers on top.  Gamma
+  counts kept.
+- Standing best remains v3.  The three mechanisms do not stack into one
+  format for free; a possible reconciliation is making length-1 support
+  per-file (one header bit choosing len table minval 1 vs 2, off1 table
+  present or absent), which would give max(v3, v5) per file at ~1 bit
+  cost - the corpus split suggests roughly v3's total minus v5's few
+  graphics wins.

@@ -13,24 +13,8 @@
 #include "tables.h"
 
 enum {
-    v4_iterations    = 8,   // parse <-> table refinement rounds
-    off1_index_bits  = 2,   // flat index of the tiny length-1 offset table
-    off1_max_buckets = 4,
+    v4_iterations = 8,      // parse <-> table refinement rounds
 };
-
-// Five tables: the tiny length-1 offset table, v2's three offset
-// contexts, and the length table (minval 1 here, not 2)
-typedef struct v4_tables {
-    table off1;
-    table off[num_contexts];
-    table len;
-} v4_tables;
-
-// Offset table for a match length, including the length-1 context
-static const table *off_table(const v4_tables *t, uint32_t length)
-{
-    return (length == 1) ? &t->off1 : &t->off[len_ctx(length)];
-}
 
 // ---- optimal forward parse ----
 //
@@ -38,7 +22,7 @@ static const table *off_table(const v4_tables *t, uint32_t length)
 // occurrence of the current byte (matches.near1) as a length-1 match.
 // Same exactness caveat as v2 over nearest-offset candidates.
 
-static uint32_t dp_pass(rc_view_bytes in, const matches *m, const v4_tables *tables,
+static uint32_t dp_pass(rc_view_bytes in, const matches *m, const len1_tables *tables,
                         rc_span_token arrival, rc_arena scratch)
 {
     uint32_t n = in.num;
@@ -128,7 +112,7 @@ static uint32_t dp_pass(rc_view_bytes in, const matches *m, const v4_tables *tab
 
 // Exact stream bits of a token sequence under the given tables (flag bits
 // + literals + matches; excludes the table headers)
-static uint32_t data_bits(rc_view_token tokens, const v4_tables *tables)
+static uint32_t data_bits(rc_view_token tokens, const len1_tables *tables)
 {
     uint32_t bits = 0;
     for (uint32_t k = 0; k < tokens.num; k++) {
@@ -138,17 +122,8 @@ static uint32_t data_bits(rc_view_token tokens, const v4_tables *tables)
         }
         else {
             bits += 1 + table_cost(&tables->len, t.length)
-                  + table_cost(off_table(tables, t.length), t.offset);
+                  + table_cost(len1_off_table(tables, t.length), t.offset);
         }
-    }
-    return bits;
-}
-
-static uint32_t transmit_bits(const v4_tables *t)
-{
-    uint32_t bits = table_transmit_bits(&t->off1) + table_transmit_bits(&t->len);
-    for (uint32_t c = 0; c < num_contexts; c++) {
-        bits += table_transmit_bits(&t->off[c]);
     }
     return bits;
 }
@@ -156,7 +131,7 @@ static uint32_t transmit_bits(const v4_tables *t)
 // ---- encoding ----
 
 static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
-                             const v4_tables *tables, rc_arena *arena)
+                             const len1_tables *tables, rc_arena *arena)
 {
     rc_array_bytes out = {0};
     rc_array_bytes_reserve(&out, 64, arena);
@@ -166,11 +141,7 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
     rc_array_bytes_push(&out, (uint8_t)(in.num >> 8), arena);
 
     bitwriter w = bitwriter_make(&out, arena);
-    write_table(&w, &tables->off1);
-    for (uint32_t c = 0; c < num_contexts; c++) {
-        write_table(&w, &tables->off[c]);
-    }
-    write_table(&w, &tables->len);
+    write_len1_tables(&w, tables);
 
     uint32_t total = 0;
     for (uint32_t k = 0; k < tokens.num; k++) {
@@ -184,42 +155,12 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
             // context, including length 1), then the offset.
             bitwriter_bits(&w, 1, 1);
             write_value(&w, &tables->len, t.length);
-            write_value(&w, off_table(tables, t.length), t.offset);
+            write_value(&w, len1_off_table(tables, t.length), t.offset);
         }
         total += t.length;
     }
     RC_ASSERT(total == in.num);
     return out;
-}
-
-// Seed tables cover every reachable candidate.  off1's seed spans 1..60:
-// beyond that a length-1 match can never beat a 9-bit literal, so the
-// profitable range is fully explorable.
-static v4_tables seed_tables(void)
-{
-    coding_tables base = seed_coding_tables();
-    v4_tables t = {
-        .off1 = {
-            .minval = 1,
-            .num_buckets = 4,
-            .index_bits = off1_index_bits,
-            .width = {2, 3, 4, 5},
-        },
-        .len = {
-            .minval = 1,
-            .num_buckets = 9,
-            .index_bits = 0,
-        },
-    };
-    for (uint32_t c = 0; c < num_contexts; c++) {
-        t.off[c] = base.off[c];
-    }
-    for (uint32_t i = 0; i < t.len.num_buckets; i++) {
-        t.len.width[i] = i;
-    }
-    table_build_starts(&t.off1);
-    table_build_starts(&t.len);
-    return t;
 }
 
 v4_compress_result v4_compress(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
@@ -234,8 +175,8 @@ v4_compress_result v4_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
     matches m = scan_matches(in, &scratch);
 
     // v2's refinement fixpoint, now over five tables.
-    v4_tables tables = seed_tables();
-    v4_tables best_tables = tables;
+    len1_tables tables = seed_len1_tables();
+    len1_tables best_tables = tables;
     rc_array_token best_tokens = {0};
     uint32_t best_bits = UINT32_MAX;
 
@@ -302,7 +243,7 @@ v4_compress_result v4_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
         }
 
         // ...and rebuild optimal tables for exactly that usage.
-        v4_tables next = {
+        len1_tables next = {
             .off1 = optimize_table(off1_hist.view, 1, max_off1,
                                    off1_index_bits, off1_max_buckets, scratch),
             .len = optimize_table(len_hist.view, 1, max_len, 0,
@@ -313,7 +254,7 @@ v4_compress_result v4_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
                                          off_index_bits, off_max_buckets, scratch);
         }
 
-        uint32_t bits = transmit_bits(&next) + data_bits(tokens.view, &next);
+        uint32_t bits = len1_transmit_bits(&next) + data_bits(tokens.view, &next);
         if (bits < best_bits) {
             best_bits = bits;
             best_tokens = tokens;
@@ -344,24 +285,10 @@ v4_decompress_result v4_decompress(rc_view_bytes comp, rc_arena *arena)
                  | ((uint32_t)rc_view_bytes_get(comp, 1) << 8);
 
     bitreader r = bitreader_make(rc_view_bytes_get_tail(comp, 2));
-    v4_tables tables;
-    table_result off1 = read_table(&r, 1, off1_index_bits, off1_max_buckets);
-    if (!off1.ok) {
+    len1_tables_result tables = read_len1_tables(&r);
+    if (!tables.ok || r.fault != bit_fault_ok) {
         return fail();
     }
-    tables.off1 = off1.table;
-    for (uint32_t c = 0; c < num_contexts; c++) {
-        table_result off = read_table(&r, 1, off_index_bits, off_max_buckets);
-        if (!off.ok) {
-            return fail();
-        }
-        tables.off[c] = off.table;
-    }
-    table_result len_table = read_table(&r, 1, 0, len_max_buckets);
-    if (!len_table.ok || r.fault != bit_fault_ok) {
-        return fail();
-    }
-    tables.len = len_table.table;
 
     rc_array_bytes out = {0};
     rc_array_bytes_reserve(&out, len ? len : 1, arena);
@@ -379,11 +306,11 @@ v4_decompress_result v4_decompress(rc_view_bytes comp, rc_arena *arena)
             // Match: length first (it selects the offset context, now
             // including length 1), then the offset, both validated - the
             // stream is untrusted.
-            value_result length = read_value(&r, &tables.len);
+            value_result length = read_value(&r, &tables.tables.len);
             if (!length.ok || r.fault != bit_fault_ok) {
                 return fail();
             }
-            value_result offset = read_value(&r, off_table(&tables, length.value));
+            value_result offset = read_value(&r, len1_off_table(&tables.tables, length.value));
             if (!offset.ok || r.fault != bit_fault_ok) {
                 return fail();
             }
@@ -559,7 +486,7 @@ RC_TEST_STEP(v4, roundtrip_max_size, fix)
 // ---- parse exactness for fixed tables ----
 
 static uint32_t brute_suffix_bits(rc_view_bytes in, const matches *m,
-                                  const v4_tables *tables, uint32_t pos)
+                                  const len1_tables *tables, uint32_t pos)
 {
     if (pos == in.num) {
         return 0;
@@ -605,7 +532,7 @@ static uint32_t brute_suffix_bits(rc_view_bytes in, const matches *m,
 
 RC_TEST_STEP(v4, parse_is_exact_for_fixed_tables, fix)
 {
-    v4_tables tables = seed_tables();
+    len1_tables tables = seed_len1_tables();
     uint32_t seed = 0xFEED;
     for (uint32_t trial = 0; trial < 60; trial++) {
         uint8_t data[12];

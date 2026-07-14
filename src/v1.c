@@ -10,6 +10,7 @@
 #include "bitreader.h"
 #include "bitutils.h"
 #include "bitwriter.h"
+#include "frontier.h"
 #include "matches.h"
 
 enum {
@@ -21,110 +22,11 @@ enum {
 // ---- optimal forward parse ----
 //
 // The block header gamma(count) makes a token's cost depend on the length
-// of the same-type run it sits in, so a single cost per position is not
-// enough state.  Each (position, arriving token type) instead keeps a
-// Pareto frontier of states (run, cost), where run is the current run
-// length and cost excludes the current run's still-pending gamma header;
-// a state's realized bits are cost + gamma_bits(run).  A state survives
-// only if no other state at the same position and type has both run <=
-// and cost <= : a smaller run is never worse, because the pending header
-// is monotone in run length and its future step-ups come no sooner.
-// Frontiers stay small because gamma_bits(run) takes only 9 distinct
-// values for run <= 256.
-//
-// Back-links are safe against dominance pruning: every edge into position
-// i comes from an earlier position, so a frontier is complete before it
-// is processed, and only states alive at processing time can acquire
-// children.
-
-typedef struct v1_node {
-    uint32_t next;          // next state in this frontier's list
-    uint32_t from_index;    // predecessor position (RC_INDEX_NONE at seed)
-    uint32_t cost;          // bits excluding the pending run header
-    uint16_t run;           // current run length, 1..256
-    uint16_t from_run;      // predecessor state's run length
-    uint8_t  from_type;     // predecessor state's token type (v1_lit/v1_match)
-    token    tok;           // token taken to reach this state
-} v1_node;
-
-#define RC_ARRAY_TYPE v1_node
-#define RC_ARRAY_NAME node
-#include "richc/template/array.h"
-
-// Insert state (run, cost) into the frontier at heads[pos] unless it is
-// dominated; removes any states it dominates.  Lists sorted by run.
-static void frontier_insert(rc_array_node *pool, rc_array_u32 *heads, uint32_t pos,
-                            uint32_t run, uint32_t cost,
-                            uint32_t from_index, uint32_t from_type, uint32_t from_run,
-                            token tok, rc_arena *arena)
-{
-    uint32_t head = rc_array_u32_get(heads, pos);
-
-    // Dominated by an existing state: nothing to do.
-    for (uint32_t c = head; c != RC_INDEX_NONE; ) {
-        const v1_node *node = rc_array_node_at(pool, c);
-        if (node->run <= run && node->cost <= cost) {
-            return;
-        }
-        c = node->next;
-    }
-
-    // Unlink every state the new one dominates.
-    uint32_t prev = RC_INDEX_NONE;
-    for (uint32_t c = head; c != RC_INDEX_NONE; ) {
-        v1_node *node = rc_array_node_at(pool, c);
-        uint32_t next = node->next;
-        if (node->run >= run && node->cost >= cost) {
-            if (prev == RC_INDEX_NONE) {
-                head = next;
-            }
-            else {
-                rc_array_node_at(pool, prev)->next = next;
-            }
-        }
-        else {
-            prev = c;
-        }
-        c = next;
-    }
-
-    // Link the new state in ascending run order.
-    uint32_t ni = rc_array_node_push(pool, (v1_node) {
-        .next = RC_INDEX_NONE,
-        .from_index = from_index,
-        .cost = cost,
-        .run = (uint16_t)run,
-        .from_run = (uint16_t)from_run,
-        .from_type = (uint8_t)from_type,
-        .tok = tok,
-    }, arena);
-    prev = RC_INDEX_NONE;
-    uint32_t c = head;
-    while (c != RC_INDEX_NONE && rc_array_node_at(pool, c)->run < run) {
-        prev = c;
-        c = rc_array_node_at(pool, c)->next;
-    }
-    rc_array_node_at(pool, ni)->next = c;
-    if (prev == RC_INDEX_NONE) {
-        head = ni;
-    }
-    else {
-        rc_array_node_at(pool, prev)->next = ni;
-    }
-    rc_array_u32_set(heads, pos, head);
-}
-
-static uint32_t frontier_find(rc_view_node pool, uint32_t head, uint32_t run)
-{
-    for (uint32_t c = head; c != RC_INDEX_NONE; ) {
-        const v1_node *node = rc_view_node_at(pool, c);
-        if (node->run == run) {
-            return c;
-        }
-        c = node->next;
-    }
-    return RC_INDEX_NONE;
-}
+// of the same-type run it sits in, so each (position, arriving token
+// type) keeps a Pareto frontier of states (run, cost-excluding-pending-
+// gamma-header); realized bits are cost + gamma_bits(run).  See
+// frontier.h.  Frontiers stay small because gamma_bits(run) takes only 9
+// distinct values for run <= 256.
 
 typedef struct v1_parse_result {
     rc_array_token tokens;  // filled only when want_tokens
@@ -166,7 +68,7 @@ static v1_parse_result v1_parse(rc_view_bytes in, const matches *m, uint32_t b,
             while (idx != RC_INDEX_NONE) {
                 // Copy the node: the pool may grow (and move nothing, but
                 // stay disciplined) while this state fans out.
-                v1_node s = rc_array_node_get(&pool, idx);
+                frontier_node s = rc_array_node_get(&pool, idx);
                 uint32_t actual = s.cost + gamma_bits(s.run);
 
                 // Literal edge: extend the literal run (if the block cap
@@ -232,7 +134,7 @@ static v1_parse_result v1_parse(rc_view_bytes in, const matches *m, uint32_t b,
     for (uint32_t type = 0; type < 2; type++) {
         uint32_t idx = rc_array_u32_get(&heads[type], n);
         while (idx != RC_INDEX_NONE) {
-            v1_node s = rc_array_node_get(&pool, idx);
+            frontier_node s = rc_array_node_get(&pool, idx);
             uint32_t bits = s.cost + gamma_bits(s.run);
             if (bits < best_bits) {
                 best_bits = bits;
@@ -256,7 +158,7 @@ static v1_parse_result v1_parse(rc_view_bytes in, const matches *m, uint32_t b,
         rc_array_token_reserve(&res.tokens, n, arena);
         uint32_t idx = best_idx;
         for (;;) {
-            v1_node s = rc_array_node_get(&pool, idx);
+            frontier_node s = rc_array_node_get(&pool, idx);
             rc_array_token_push(&res.tokens, s.tok, arena);
             if (s.from_index == RC_INDEX_NONE) {
                 break;

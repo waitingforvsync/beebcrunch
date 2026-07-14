@@ -36,6 +36,8 @@ enum {
     off_max_buckets = 16,       // addressable by the flat offset index
     len_max_buckets = 31,       // gamma index has no structural pin
     num_contexts    = 3,        // offset contexts: len==2, len==3, len>=4
+    off1_index_bits  = 2,       // flat index of the tiny length-1 offset table
+    off1_max_buckets = 4,
 };
 
 // Short matches overwhelmingly use short offsets, so each length class
@@ -105,5 +107,37 @@ coding_tables_result read_coding_tables(bitreader *r);
 // Seed tables cover the full value ranges so a first parse can reach
 // every candidate; deliberately gamma-like, not tuned
 coding_tables seed_coding_tables(void);
+
+// The length-1 composition (v4 onwards): the length table's minimum value
+// drops to 1, and a deliberately tiny fourth offset table serves length-1
+// matches - they only ever beat a 9-bit literal at small offsets, and the
+// table learns exactly that range.  Serialized off1 first, then the three
+// offset contexts, then lengths.
+typedef struct len1_tables {
+    table off1;
+    table off[num_contexts];
+    table len;
+} len1_tables;
+
+// Offset table for a match length, including the length-1 context
+static inline const table *len1_off_table(const len1_tables *t, uint32_t length)
+{
+    return (length == 1) ? &t->off1 : &t->off[len_ctx(length)];
+}
+
+uint32_t len1_transmit_bits(const len1_tables *t);
+
+void write_len1_tables(bitwriter *w, const len1_tables *t);
+
+typedef struct len1_tables_result {
+    len1_tables tables;
+    bool        ok;
+} len1_tables_result;
+
+len1_tables_result read_len1_tables(bitreader *r);
+
+// off1's seed spans 1..60: beyond that a length-1 match can never beat a
+// 9-bit literal, so the profitable range is fully explorable
+len1_tables seed_len1_tables(void);
 
 #endif // TABLES_H_
