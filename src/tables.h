@@ -25,6 +25,7 @@
 #include "richc/array/u32.h"
 
 #include "bitreader.h"
+#include "bitutils.h"
 #include "bitwriter.h"
 
 typedef struct rc_arena rc_arena;
@@ -38,6 +39,9 @@ enum {
     num_contexts    = 3,        // offset contexts: len==2, len==3, len>=4
     off1_index_bits  = 2,       // flat index of the tiny length-1 offset table
     off1_max_buckets = 4,
+    index_unary      = 16,      // out-of-band index_bits value: unary bucket
+                                // index, i zeros then a 1 (i + 1 bits); real
+                                // flat widths cap at the 8-bit I/O limit
 };
 
 // Short matches overwhelmingly use short offsets, so each length class
@@ -47,7 +51,8 @@ static inline uint32_t len_ctx(uint32_t length) { return (length == 2) ? 0 : (le
 typedef struct table {
     uint32_t minval;
     uint32_t num_buckets;
-    uint32_t index_bits;    // 0 = Elias gamma index, else fixed width
+    uint32_t index_bits;    // 0 = Elias gamma index, index_unary = unary
+                            // index, else fixed width
     uint32_t width[table_capacity];
     uint32_t start[table_capacity];
 } table;
@@ -67,6 +72,14 @@ typedef struct value_result {
     uint32_t value;
     bool     ok;            // false on an out-of-range bucket index
 } value_result;
+
+// Cost in bits of the bucket index i under an index_bits mode
+static inline uint32_t index_cost(uint32_t index_bits, uint32_t i)
+{
+    return (index_bits == 0)           ? gamma_bits(i + 1)
+         : (index_bits == index_unary) ? i + 1
+         : index_bits;
+}
 
 void table_build_starts(table *t);
 

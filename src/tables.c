@@ -36,7 +36,7 @@ uint32_t table_cost(const table *t, uint32_t v)
     if (i == RC_INDEX_NONE) {
         return table_big_cost;
     }
-    uint32_t prefix = t->index_bits ? t->index_bits : gamma_bits(i + 1);
+    uint32_t prefix = index_cost(t->index_bits, i);
     return prefix + t->width[i];
 }
 
@@ -47,7 +47,9 @@ uint32_t table_cost(const table *t, uint32_t v)
 // (start, depth) try every width and keep the one minimizing this
 // bucket's bits plus the best partition of the rest; memoized on
 // (start - minval) * table_capacity + depth.  The prefix cost per bucket
-// is the index code: flat index_bits, or gamma(depth + 1).
+// is the index code: flat index_bits, gamma(depth + 1), or unary
+// depth + 1.  Each bucket also pays its 4 header bits (the serialized
+// width nibble), so the objective is true size, not just data bits.
 
 static uint64_t opt_rec(rc_view_u32 stats, uint32_t minval, uint32_t maxval,
                         uint32_t start, uint32_t depth, uint32_t index_bits,
@@ -60,14 +62,14 @@ static uint64_t opt_rec(rc_view_u32 stats, uint32_t minval, uint32_t maxval,
         return rc_span_u64_get(memo_cost, key);
     }
 
-    uint64_t prefix = index_bits ? index_bits : gamma_bits(depth + 1);
+    uint64_t prefix = index_cost(index_bits, depth);
     uint64_t best = UINT64_MAX;
     uint32_t best_width = 0;
     for (uint32_t w = 0; w <= 15; w++) {
         uint64_t end = (uint64_t)start + (1ull << w);
         uint32_t end_clamped = (end > maxval + 1u) ? (maxval + 1) : (uint32_t)end;
         uint64_t here = (uint64_t)(rc_view_u32_get(stats, start) - rc_view_u32_get(stats, end_clamped))
-                      * (prefix + w);
+                      * (prefix + w) + 4;
         uint64_t total;
         if (end_clamped <= maxval && rc_view_u32_get(stats, end_clamped) > 0) {
             // More values beyond this bucket: recurse unless out of depth.
@@ -213,7 +215,16 @@ void write_value(bitwriter *w, const table *t, uint32_t v)
 {
     uint32_t i = table_index(t, v);
     RC_ASSERT(i != RC_INDEX_NONE);
-    if (t->index_bits) {
+    if (t->index_bits == index_unary) {
+        // Unary: i zeros then a terminating 1, in <= 8-bit pieces.
+        uint32_t zeros = i;
+        while (zeros >= 8) {
+            bitwriter_bits(w, 0, 8);
+            zeros -= 8;
+        }
+        bitwriter_bits(w, 1, zeros + 1);
+    }
+    else if (t->index_bits) {
         bitwriter_bits(w, i, t->index_bits);
     }
     else {
@@ -256,7 +267,17 @@ table_result read_table(bitreader *r, uint32_t minval, uint32_t index_bits,
 value_result read_value(bitreader *r, const table *t)
 {
     uint32_t i;
-    if (t->index_bits) {
+    if (t->index_bits == index_unary) {
+        // Count zeros to the terminating 1; past-the-end reads return
+        // zeros, so bound the run (validated against num_buckets below).
+        i = 0;
+        while (bitreader_bits(r, 1) == 0) {
+            if (++i > table_capacity) {
+                break;
+            }
+        }
+    }
+    else if (t->index_bits) {
         i = bitreader_bits(r, t->index_bits);
     }
     else {
@@ -441,6 +462,11 @@ RC_TEST(tables, starts_index_cost)
     RC_CHECK(table_cost(&t, 1), ==, 1u);            // gamma(1) + 0
     RC_CHECK(table_cost(&t, 3), ==, 4u);            // gamma(2)=3 + 1
     RC_CHECK(table_cost(&t, 9), ==, 8u);            // gamma(4)=5 + 3
+
+    t.index_bits = index_unary;
+    RC_CHECK(table_cost(&t, 1), ==, 1u);            // unary 1 + 0
+    RC_CHECK(table_cost(&t, 3), ==, 3u);            // unary 2 + 1
+    RC_CHECK(table_cost(&t, 9), ==, 7u);            // unary 4 + 3
 }
 
 RC_TEST_STEP(tables, serialize_roundtrip, fix)
@@ -511,6 +537,33 @@ RC_TEST_STEP(tables, value_roundtrip_wide_extras, fix)
     RC_CHECK(r.fault, ==, bit_fault_ok);
 }
 
+RC_TEST_STEP(tables, unary_value_roundtrip, fix)
+{
+    // 17 width-0 buckets covering 1..17: value 17 takes index 16, whose
+    // unary code spans two <= 8-bit pieces (8 zeros + 8 zeros... + 1).
+    table t = {
+        .minval = 1,
+        .num_buckets = 17,
+        .index_bits = index_unary,
+    };
+    table_build_starts(&t);
+
+    uint32_t vals[4] = {1, 2, 9, 17};
+    rc_array_bytes buf = {0};
+    bitwriter w = bitwriter_make(&buf, &fix->a);
+    for (uint32_t k = 0; k < 4; k++) {
+        write_value(&w, &t, vals[k]);
+    }
+
+    bitreader r = bitreader_make(buf.view);
+    for (uint32_t k = 0; k < 4; k++) {
+        value_result v = read_value(&r, &t);
+        RC_CHECK_TRUE(v.ok);
+        RC_CHECK(v.value, ==, vals[k]);
+    }
+    RC_CHECK(r.fault, ==, bit_fault_ok);
+}
+
 // ---- optimizer vs brute force ----
 
 // Exhaustive minimal data bits over all partitions (small widths only),
@@ -528,9 +581,9 @@ static uint64_t brute_partition(rc_view_u32 stats, uint32_t maxval,
     for (uint32_t w = 0; w <= 6; w++) {
         uint64_t end = (uint64_t)start + (1ull << w);
         uint32_t end_clamped = (end > maxval + 1u) ? (maxval + 1) : (uint32_t)end;
-        uint64_t prefix = index_bits ? index_bits : gamma_bits(depth + 1);
+        uint64_t prefix = index_cost(index_bits, depth);
         uint64_t here = (uint64_t)(rc_view_u32_get(stats, start) - rc_view_u32_get(stats, end_clamped))
-                      * (prefix + w);
+                      * (prefix + w) + 4;
         uint64_t rest = brute_partition(stats, maxval, end_clamped, depth + 1, index_bits);
         if (rest != UINT64_MAX && here + rest < best) {
             best = here + rest;
@@ -580,7 +633,7 @@ static void check_optimizer(rc_view_u32 hist, uint32_t minval, uint32_t maxval,
         RC_CHECK(t.num_buckets, ==, 0u);
         return;
     }
-    uint64_t got = hist_data_bits(hist, minval, maxval, &t);
+    uint64_t got = hist_data_bits(hist, minval, maxval, &t) + 4ull * t.num_buckets;
     uint64_t want = brute_partition(stats.view, maxval, minval, 0, index_bits);
     RC_CHECK(got, ==, want);
 }
