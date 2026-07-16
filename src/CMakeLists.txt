@@ -12,6 +12,7 @@ add_executable(beebcrunch
     v4.c
     v5.c
     v6.c
+    v7.c
     bitreader.h
     bitutils.h
     bitwriter.h
@@ -25,6 +26,7 @@ add_executable(beebcrunch
     v4.h
     v5.h
     v6.h
+    v7.h
 )
 
 target_link_libraries(beebcrunch PRIVATE richc)

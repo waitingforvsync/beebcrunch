@@ -108,6 +108,13 @@ void write_coding_tables(bitwriter *w, const coding_tables *t);
 // The reader's fault latch separately covers truncation/malformed gammas
 table_result read_table(bitreader *r, uint32_t minval, uint32_t index_bits,
                         uint32_t max_buckets);
+
+// Fixed-count serialization (v6 onwards): a table whose bucket count the
+// format pins carries bare width nibbles - no 5-bit count field; unused
+// tail buckets pad as width 0.  Reading cannot fail structurally.
+void write_fixed_table(bitwriter *w, const table *t, uint32_t count);
+table read_fixed_table(bitreader *r, uint32_t minval, uint32_t index_bits,
+                       uint32_t count);
 value_result read_value(bitreader *r, const table *t);
 
 typedef struct coding_tables_result {

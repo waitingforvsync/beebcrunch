@@ -20,6 +20,7 @@ measured against exomizer raw, the reference target.
 | v4 | 97815 | 58.6% | +1.7% |
 | v5 | 97906 | 58.7% | +1.8% |
 | v6 | 96874 | 58.1% | +0.7% |
+| v7 | 96877 | 58.1% | +0.7% |
 
 ## Per-file results
 
@@ -27,20 +28,20 @@ Packed sizes; new codecs add a column.  exo -c is the comparison column
 (exomizer without literal sequences, the closest analogue of a small-
 decoder format).
 
-| file | original | exo -c | v0 | v1 | v2 | v3 | v4 | v5 | v6 |
-|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4464 | 4451 | 4445 | 4464 | 4375 |
-| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 | 7160 | 7096 | 7120 | 7059 |
-| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 | 12843 | 13035 | 12923 | 12943 |
-| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 | 5013 | 4982 | 4991 | 4968 |
-| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 | 4321 | 4450 | 4331 | 4443 |
-| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 | 3014 | 3048 | 3006 | 3013 |
-| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21198 | 21084 | 21045 | 21184 | 20778 |
-| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6672 | 6661 | 6580 | 6619 | 6523 |
-| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9147 | 9007 | 9025 | 9031 | 8962 |
-| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 | 11625 | 11634 | 11638 | 11550 |
-| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12502 | 12506 | 12475 | 12599 | 12260 |
-| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98526** | **97685** | **97815** | **97906** | **96874** |
+| file | original | exo -c | v0 | v1 | v2 | v3 | v4 | v5 | v6 | v7 |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4464 | 4451 | 4445 | 4464 | 4375 | 4420 |
+| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 | 7160 | 7096 | 7120 | 7059 | 7066 |
+| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 | 12843 | 13035 | 12923 | 12943 | 12817 |
+| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 | 5013 | 4982 | 4991 | 4968 | 4979 |
+| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 | 4321 | 4450 | 4331 | 4443 | 4309 |
+| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 | 3014 | 3048 | 3006 | 3013 | 2978 |
+| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21198 | 21084 | 21045 | 21184 | 20778 | 20882 |
+| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6672 | 6661 | 6580 | 6619 | 6523 | 6536 |
+| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9147 | 9007 | 9025 | 9031 | 8962 | 8948 |
+| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 | 11625 | 11634 | 11638 | 11550 | 11531 |
+| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12502 | 12506 | 12475 | 12599 | 12260 | 12411 |
+| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98526** | **97685** | **97815** | **97906** | **96874** | **96877** |
 
 ## Exomizer 3.0.2 (raw and raw -c)
 
@@ -300,3 +301,39 @@ refinement adopted.
   reader becomes a fixed-length nibble loop, as in exomizer.  The
   length table keeps its count field (it converges to 9-14 buckets,
   varying per file).
+
+## v7
+
+v6's coding inside the block framing (src/v7.h): alternating
+literal/match blocks, the five v6 tables (unary length index, pinned
+offset counts), plus - the decisive piece - the block counts themselves
+coded through two more learned interval tables (literal-run and
+match-run), unary-indexed.  A unary index with geometric widths costs
+(i+1) + i = 2i+1 bits, exactly Elias gamma, so the count seed starts at
+gamma parity and refits only improve - this removes the structural
+handicap that sank the gamma-indexed count-table attempt in v5 (98260).
+No Elias gamma remains anywhere in the v7 stream: the decoder needs one
+unary reader, flat indices and raw bits.  Measured 2026-07-15: 96877
+(58.1%), 3 bytes behind v6 (96874).
+
+Notes:
+
+- Ladder within v7: v5's chassis with unary lengths = 97048; learned
+  unary count tables -171 = 96877.  Block-count distributions measured
+  first: run length 1 dominates (67% of literal blocks, 54% of match
+  blocks), 90%+ at <= 7, gamma slack vs empirical entropy ~342 bytes -
+  the tables recover half net of their two headers.
+- The blocks-vs-flags verdict tightens to a 3-byte tie overall, but the
+  per-file split persists: v7 wins the graphics and match-dense files
+  (boomscreen -134, ravenskull -126, blurpscreen -35, blurp -19,
+  frak2 -14 vs v6), v6 wins the executables (basic2 -151, exileb -104,
+  exile-title -45 vs v7).  Best-of-both per file = 96546: +0.36% vs
+  exomizer raw and just +0.12% vs raw -c - a per-file chassis bit is
+  now worth 328 bytes over either single codec.
+- Every input is representable in v7 (proved, test-enforced): at most
+  256 positions in a file are first occurrences of their byte value, so
+  a 257-literal run always contains a length-1 escape valve, and long
+  match runs convert a match back to literals.  The encoder retries
+  from a full-coverage length-1 seed when the tuned seed cannot reach a
+  needed escape (pathological inputs only; no corpus file triggers it).
+  v1/v3/v5 keep their unencodable corner; v7 closes it.

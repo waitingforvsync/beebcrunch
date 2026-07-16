@@ -241,6 +241,29 @@ void write_coding_tables(bitwriter *w, const coding_tables *t)
     write_table(w, &t->len);
 }
 
+void write_fixed_table(bitwriter *w, const table *t, uint32_t count)
+{
+    RC_ASSERT(t->num_buckets <= count);
+    for (uint32_t i = 0; i < count; i++) {
+        bitwriter_bits(w, i < t->num_buckets ? t->width[i] : 0, 4);
+    }
+}
+
+table read_fixed_table(bitreader *r, uint32_t minval, uint32_t index_bits,
+                       uint32_t count)
+{
+    table t = {
+        .minval = minval,
+        .num_buckets = count,
+        .index_bits = index_bits,
+    };
+    for (uint32_t i = 0; i < count; i++) {
+        t.width[i] = bitreader_bits(r, 4);
+    }
+    table_build_starts(&t);
+    return t;
+}
+
 table_result read_table(bitreader *r, uint32_t minval, uint32_t index_bits,
                         uint32_t max_buckets)
 {

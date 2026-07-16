@@ -21,33 +21,6 @@ enum {
 static const uint32_t v6_off_bits[num_contexts]    = {4, 4, 4};
 static const uint32_t v6_off_buckets[num_contexts] = {16, 16, 16};
 
-// Offset bucket counts are pinned by the format (they converge to the
-// cap on every corpus file anyway), so their tables serialize as bare
-// width nibbles - no 5-bit count field, exomizer-style.  Unused tail
-// buckets pad as width 0.
-static void write_fixed_table(bitwriter *w, const table *t, uint32_t count)
-{
-    RC_ASSERT(t->num_buckets <= count);
-    for (uint32_t i = 0; i < count; i++) {
-        bitwriter_bits(w, i < t->num_buckets ? t->width[i] : 0, 4);
-    }
-}
-
-static table read_fixed_table(bitreader *r, uint32_t minval, uint32_t index_bits,
-                              uint32_t count)
-{
-    table t = {
-        .minval = minval,
-        .num_buckets = count,
-        .index_bits = index_bits,
-    };
-    for (uint32_t i = 0; i < count; i++) {
-        t.width[i] = bitreader_bits(r, 4);
-    }
-    table_build_starts(&t);
-    return t;
-}
-
 // seed_len1_tables assumes 4-bit/16-bucket contexts; reshape any
 // narrower context to a coarser full-coverage seed.
 static len1_tables v6_seed_tables(void)

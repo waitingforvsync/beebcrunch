@@ -19,6 +19,7 @@
 #include "v4.h"
 #include "v5.h"
 #include "v6.h"
+#include "v7.h"
 
 #ifdef ENABLE_TESTS
 #include "richc/test.h"
@@ -69,6 +70,12 @@ static rc_array_bytes compress_v6(rc_view_bytes in, rc_arena *arena, rc_arena sc
     return v6_compress(in, arena, scratch).data;
 }
 
+static rc_array_bytes compress_v7(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
+{
+    v7_compress_result c = v7_compress(in, arena, scratch);
+    return c.ok ? c.data : (rc_array_bytes) {0};
+}
+
 static const codec codecs[] = {
     {.name = "v0", .compress = compress_v0},
     {.name = "v1", .compress = compress_v1},
@@ -77,6 +84,7 @@ static const codec codecs[] = {
     {.name = "v4", .compress = compress_v4},
     {.name = "v5", .compress = compress_v5},
     {.name = "v6", .compress = compress_v6},
+    {.name = "v7", .compress = compress_v7},
 };
 
 static const char *corpus_files[] = {
@@ -163,7 +171,7 @@ static int cmd_bench(const char *corpus_dir)
     rc_arena scratch = rc_arena_make_default();
     int rc = 0;
 
-    printf("%-22s %7s %8s %8s %8s %8s %8s %8s %8s %7s\n", "file", "orig", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "ratio");
+    printf("%-22s %7s %8s %8s %8s %8s %8s %8s %8s %8s %7s\n", "file", "orig", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "ratio");
 
     uint32_t total_orig = 0;
     uint32_t total_v0 = 0;
@@ -173,6 +181,7 @@ static int cmd_bench(const char *corpus_dir)
     uint32_t total_v4 = 0;
     uint32_t total_v5 = 0;
     uint32_t total_v6 = 0;
+    uint32_t total_v7 = 0;
     bool v1_all_ok = true;
     for (uint32_t k = 0; k < sizeof corpus_files / sizeof corpus_files[0]; k++) {
         char path[512];
@@ -272,9 +281,25 @@ static int cmd_bench(const char *corpus_dir)
             continue;
         }
 
+        v7_compress_result c7 = v7_compress(f.contents.view, &arena, scratch);
+        uint32_t v7_size = 0;
+        bool v7_ok = c7.ok;
+        if (c7.ok) {
+            v7_decompress_result d7 = v7_decompress(c7.data.view, &arena);
+            if (!d7.ok || d7.data.num != f.contents.num
+                || memcmp(d7.data.data, f.contents.data, f.contents.num) != 0) {
+                fprintf(stderr, "bench: %s failed v7 round trip\n", path);
+                rc = 1;
+                continue;
+            }
+            v7_size = c7.data.num;
+            total_v7 += c7.data.num;
+        }
+
         char v1_col[16];
         char v3_col[16];
         char v5_col[16];
+        char v7_col[16];
         if (c1.ok) {
             snprintf(v1_col, sizeof v1_col, "%u", v1_size);
         }
@@ -293,10 +318,17 @@ static int cmd_bench(const char *corpus_dir)
         else {
             snprintf(v5_col, sizeof v5_col, "-");
         }
-        printf("%-22s %7u %8u %8s %8u %8s %8u %8s %8u %6.1f%%\n", corpus_files[k],
+        if (v7_ok) {
+            snprintf(v7_col, sizeof v7_col, "%u", v7_size);
+        }
+        else {
+            snprintf(v7_col, sizeof v7_col, "-");
+        }
+        printf("%-22s %7u %8u %8s %8u %8s %8u %8s %8u %8s %6.1f%%\n", corpus_files[k],
                f.contents.num, c0.data.num, v1_col, c2.data.num, v3_col,
-               c4.data.num, v5_col, c6.data.num,
-               100.0 * c6.data.num / f.contents.num);
+               c4.data.num, v5_col, c6.data.num, v7_col,
+               v7_ok ? 100.0 * v7_size / f.contents.num
+                     : 100.0 * c6.data.num / f.contents.num);
         total_orig += f.contents.num;
         total_v0 += c0.data.num;
         total_v2 += c2.data.num;
@@ -306,9 +338,9 @@ static int cmd_bench(const char *corpus_dir)
     }
 
     if (total_orig > 0) {
-        printf("%-22s %7u %8u %8u %8u %8u %8u %8u %8u %6.1f%%%s\n", "TOTAL", total_orig, total_v0,
-               total_v1, total_v2, total_v3, total_v4, total_v5, total_v6,
-               100.0 * total_v6 / total_orig,
+        printf("%-22s %7u %8u %8u %8u %8u %8u %8u %8u %8u %6.1f%%%s\n", "TOTAL", total_orig, total_v0,
+               total_v1, total_v2, total_v3, total_v4, total_v5, total_v6, total_v7,
+               100.0 * total_v7 / total_orig,
                v1_all_ok ? "" : " (v1 total excludes failed files)");
     }
 
