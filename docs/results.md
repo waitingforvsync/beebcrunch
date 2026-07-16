@@ -19,8 +19,8 @@ measured against exomizer raw, the reference target.
 | v3 | 97685 | 58.6% | +1.5% |
 | v4 | 97815 | 58.6% | +1.7% |
 | v5 | 97906 | 58.7% | +1.8% |
-| v6 | 96874 | 58.1% | +0.7% |
-| v7 | 96877 | 58.1% | +0.7% |
+| v6 | 96869 | 58.1% | +0.7% |
+| v7 | 96874 | 58.1% | +0.7% |
 
 ## Per-file results
 
@@ -30,18 +30,18 @@ decoder format).
 
 | file | original | exo -c | v0 | v1 | v2 | v3 | v4 | v5 | v6 | v7 |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4464 | 4451 | 4445 | 4464 | 4375 | 4420 |
-| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 | 7160 | 7096 | 7120 | 7059 | 7066 |
-| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 | 12843 | 13035 | 12923 | 12943 | 12817 |
-| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 | 5013 | 4982 | 4991 | 4968 | 4979 |
-| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 | 4321 | 4450 | 4331 | 4443 | 4309 |
-| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 | 3014 | 3048 | 3006 | 3013 | 2978 |
-| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21198 | 21084 | 21045 | 21184 | 20778 | 20882 |
-| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6672 | 6661 | 6580 | 6619 | 6523 | 6536 |
-| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9147 | 9007 | 9025 | 9031 | 8962 | 8948 |
-| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 | 11625 | 11634 | 11638 | 11550 | 11531 |
-| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12502 | 12506 | 12475 | 12599 | 12260 | 12411 |
-| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98526** | **97685** | **97815** | **97906** | **96874** | **96877** |
+| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4464 | 4451 | 4445 | 4464 | 4375 | 4421 |
+| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 | 7160 | 7096 | 7120 | 7059 | 7065 |
+| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 | 12843 | 13035 | 12923 | 12942 | 12815 |
+| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 | 5013 | 4982 | 4991 | 4968 | 4980 |
+| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 | 4321 | 4450 | 4331 | 4440 | 4311 |
+| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 | 3014 | 3048 | 3006 | 3013 | 2980 |
+| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21198 | 21084 | 21045 | 21184 | 20777 | 20879 |
+| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6672 | 6661 | 6580 | 6619 | 6522 | 6537 |
+| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9147 | 9007 | 9025 | 9031 | 8961 | 8947 |
+| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 | 11625 | 11634 | 11638 | 11553 | 11529 |
+| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12502 | 12506 | 12475 | 12599 | 12259 | 12410 |
+| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98526** | **97685** | **97815** | **97906** | **96869** | **96874** |
 
 ## Exomizer 3.0.2 (raw and raw -c)
 
@@ -235,6 +235,7 @@ bits - capped at 16 buckets (indices 0-15).  Everything else is v4
 byte-for-byte: flag bits, five learned tables, length-1 matches, same
 parse and fixpoint.  Measured 2026-07-15: 96874 (58.1%) - NEW BEST,
 -811 vs v3, -941 vs v4, +0.7% vs exomizer raw, +0.5% vs raw -c.
+Length bucket pinning (below) later took it to 96869.
 
 Notes:
 
@@ -337,3 +338,42 @@ Notes:
   from a full-coverage length-1 seed when the tuned seed cannot reach a
   needed escape (pathological inputs only; no corpus file triggers it).
   v1/v3/v5 keep their unencodable corner; v7 closes it.
+
+## Length bucket count sweep (2026-07-16)
+
+Converged length tables use 9-14 buckets per file (5-bit count field,
+cap 16).  Swept the cap and the count-field-vs-pinned choice on v6:
+
+- Cap 8 with the count field kept: +45 - shrinking an exact optimizer's
+  search space only hurts.
+- Pinning the count (no 5-bit field, bare nibbles like the offsets):
+  8 -> 96912, 9 -> 96879, 10 -> 96869, 11 -> 96872, 12 -> 96872.
+  ADOPTED for v6: pinned 10 = 96869 (-5); the header saving beats the
+  forced tail coarsening exactly there.
+- v7 measured the other way (pinned 10/12/16 = +27/+33/+19 vs its
+  count-field 96877): block framing shifts its length distribution, so
+  v7 keeps the 5-bit count at cap 16.  Best-of-both per file is now
+  96543 (+0.36% vs exomizer raw, +0.11% vs raw -c).
+
+## Fully fixed table geometry (2026-07-16)
+
+Two structural cleanups, per user direction: the length-1 offset table
+was a separate struct member for historical reasons only - it is now
+off[0] of a single four-context array (off_ctx: len 1 / 2 / 3 / >= 4),
+with per-context index geometry from shared helpers; v4-v7 byte-
+identical after the fold.  And no bucket count travels in the stream
+anywhere any more: every table's bucket COUNT is a format constant
+(bare width nibbles, exomizer-style), while the interval geometry - the
+widths - remains fully adaptive per file.
+
+- v6 already had zero count fields (offsets 4/16/16/16, length pinned
+  10).
+- v7's length and two count tables dropped theirs; converged counts
+  measured first (cnt-lit 3-10, cnt-match 7-10, len 9-14), then the
+  (len, cnt) pin swept: (16,10) 96903, (14,10) 96892, (16,9) 96894,
+  (14,9) 96883, (13,9) 96874 <- adopted, (13,8) 96929, (13,10) 96884,
+  (12,9) 96908.  The pinned format now BEATS the count-field one
+  (96877) by 3 bytes as well as simplifying the decoder: v7's header is
+  exactly 74 nibbles, read by one fixed loop.
+- v6 = 96869 and v7 = 96874 both carry zero per-table counts;
+  best-of-both per file improves to 96542.

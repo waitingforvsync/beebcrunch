@@ -99,7 +99,7 @@ static v5_parse_result v5_parse(rc_view_bytes in, const matches *m,
                 // longer matches below.
                 uint32_t d = rc_array_u32_get(&m->near1, i);
                 if (d != 0 && len1_cost < table_big_cost) {
-                    uint32_t oc = table_cost(&tables->off1, d);
+                    uint32_t oc = table_cost(&tables->off[0], d);
                     if (oc < table_big_cost) {
                         uint32_t payload = len1_cost + oc;
                         token rt = {
@@ -130,9 +130,9 @@ static v5_parse_result v5_parse(rc_view_bytes in, const matches *m,
                 uint32_t end = rc_array_u32_get(&m->start, i + 1);
                 for (uint32_t k = rc_array_u32_get(&m->start, i); k < end; k++) {
                     token t = rc_array_token_get(&m->bp, k);
-                    uint32_t off_cost[num_contexts];
+                    uint32_t off_cost[num_off_tables];
                     bool any_covered = false;
-                    for (uint32_t c = 0; c < num_contexts; c++) {
+                    for (uint32_t c = 1; c < num_off_tables; c++) {
                         off_cost[c] = table_cost(&tables->off[c], t.offset);
                         any_covered = any_covered || off_cost[c] < table_big_cost;
                     }
@@ -144,7 +144,7 @@ static v5_parse_result v5_parse(rc_view_bytes in, const matches *m,
                         if (len_cost >= table_big_cost) {
                             break;
                         }
-                        uint32_t oc = off_cost[len_ctx(len)];
+                        uint32_t oc = off_cost[off_ctx(len)];
                         if (oc >= table_big_cost) {
                             continue;
                         }
@@ -304,10 +304,9 @@ v5_compress_result v5_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
     // Empty input: header plus the (empty) tables, no blocks at all.
     if (n == 0) {
         len1_tables empty = {
-            .off1 = {.minval = 1},
             .len = {.minval = 1},
         };
-        for (uint32_t c = 0; c < num_contexts; c++) {
+        for (uint32_t c = 0; c < num_off_tables; c++) {
             empty.off[c] = (table) {.minval = 1};
         }
         return (v5_compress_result) {
@@ -347,13 +346,8 @@ v5_compress_result v5_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
         for (uint32_t v = 0; v <= max_match; v++) {
             rc_array_u32_set(&len_hist, v, 0);
         }
-        rc_array_u32 off1_hist = {0};
-        rc_array_u32_resize(&off1_hist, n + 1, &scratch);
-        for (uint32_t v = 0; v <= n; v++) {
-            rc_array_u32_set(&off1_hist, v, 0);
-        }
-        rc_array_u32 off_hist[num_contexts];
-        for (uint32_t c = 0; c < num_contexts; c++) {
+        rc_array_u32 off_hist[num_off_tables];
+        for (uint32_t c = 0; c < num_off_tables; c++) {
             off_hist[c] = (rc_array_u32) {0};
             rc_array_u32_resize(&off_hist[c], n + 1, &scratch);
             for (uint32_t v = 0; v <= n; v++) {
@@ -361,8 +355,7 @@ v5_compress_result v5_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             }
         }
         uint32_t max_len = 0;
-        uint32_t max_off1 = 0;
-        uint32_t max_off[num_contexts] = {0};
+        uint32_t max_off[num_off_tables] = {0};
         for (uint32_t k = 0; k < parsed.tokens.num; k++) {
             token t = rc_view_token_get(parsed.tokens.view, k);
             if (token_is_literal(t)) {
@@ -372,31 +365,21 @@ v5_compress_result v5_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             if (t.length > max_len) {
                 max_len = t.length;
             }
-            if (t.length == 1) {
-                rc_array_u32_set(&off1_hist, t.offset, rc_array_u32_get(&off1_hist, t.offset) + 1);
-                if (t.offset > max_off1) {
-                    max_off1 = t.offset;
-                }
-            }
-            else {
-                uint32_t c = len_ctx(t.length);
-                rc_array_u32_set(&off_hist[c], t.offset, rc_array_u32_get(&off_hist[c], t.offset) + 1);
-                if (t.offset > max_off[c]) {
-                    max_off[c] = t.offset;
-                }
+            uint32_t c = off_ctx(t.length);
+            rc_array_u32_set(&off_hist[c], t.offset, rc_array_u32_get(&off_hist[c], t.offset) + 1);
+            if (t.offset > max_off[c]) {
+                max_off[c] = t.offset;
             }
         }
 
         // ...and rebuild optimal tables for exactly that usage.
         len1_tables next = {
-            .off1 = optimize_table(off1_hist.view, 1, max_off1,
-                                   off1_index_bits, off1_max_buckets, scratch),
             .len = optimize_table(len_hist.view, 1, max_len, 0,
                                   len_max_buckets, scratch),
         };
-        for (uint32_t c = 0; c < num_contexts; c++) {
+        for (uint32_t c = 0; c < num_off_tables; c++) {
             next.off[c] = optimize_table(off_hist[c].view, 1, max_off[c],
-                                         off_index_bits, off_max_buckets, scratch);
+                                         off_ctx_index_bits(c), off_ctx_buckets(c), scratch);
         }
 
         uint32_t bits = len1_transmit_bits(&next) + data_bits(parsed.tokens.view, &next);
@@ -762,7 +745,7 @@ static void brute_parses(rc_view_bytes in, const matches *m,
     uint32_t d = rc_array_u32_get(&m->near1, pos);
     if (d != 0
         && table_cost(&tables->len, 1) < table_big_cost
-        && table_cost(&tables->off1, d) < table_big_cost) {
+        && table_cost(&tables->off[0], d) < table_big_cost) {
         rc_array_token_push(seq, (token) {
             .length = 1,
             .offset = (uint16_t)d,
@@ -778,7 +761,7 @@ static void brute_parses(rc_view_bytes in, const matches *m,
         token t = rc_array_token_get(&m->bp, k);
         for (uint32_t len = lo + 1; len <= t.length; len++) {
             if (table_cost(&tables->len, len) >= table_big_cost
-                || table_cost(&tables->off[len_ctx(len)], t.offset) >= table_big_cost) {
+                || table_cost(&tables->off[off_ctx(len)], t.offset) >= table_big_cost) {
                 continue;
             }
             rc_array_token_push(seq, (token) {

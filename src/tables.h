@@ -39,6 +39,7 @@ enum {
     num_contexts    = 3,        // offset contexts: len==2, len==3, len>=4
     off1_index_bits  = 2,       // flat index of the tiny length-1 offset table
     off1_max_buckets = 4,
+    num_off_tables   = 4,       // len1_tables contexts: len 1 / 2 / 3 / >= 4
     index_unary      = 16,      // out-of-band index_bits value: unary bucket
                                 // index, i zeros then a 1 (i + 1 bits); real
                                 // flat widths cap at the 8-bit I/O limit
@@ -129,20 +130,28 @@ coding_tables_result read_coding_tables(bitreader *r);
 coding_tables seed_coding_tables(void);
 
 // The length-1 composition (v4 onwards): the length table's minimum value
-// drops to 1, and a deliberately tiny fourth offset table serves length-1
-// matches - they only ever beat a 9-bit literal at small offsets, and the
-// table learns exactly that range.  Serialized off1 first, then the three
-// offset contexts, then lengths.
+// drops to 1, and a deliberately tiny extra offset context serves
+// length-1 matches - they only ever beat a 9-bit literal at small
+// offsets, and the table learns exactly that range.  Serialized in
+// context order (length 1 first), then lengths.
 typedef struct len1_tables {
-    table off1;
-    table off[num_contexts];
+    table off[num_off_tables];  // indexed by off_ctx
     table len;
 } len1_tables;
 
-// Offset table for a match length, including the length-1 context
+// Offset context for a match length, length 1 included
+static inline uint32_t off_ctx(uint32_t length)
+{
+    return (length == 1) ? 0 : (length == 2) ? 1 : (length == 3) ? 2 : 3;
+}
+
+// Fixed index geometry per context: the length-1 context is tiny
+static inline uint32_t off_ctx_index_bits(uint32_t c) { return (c == 0) ? off1_index_bits : off_index_bits; }
+static inline uint32_t off_ctx_buckets(uint32_t c) { return (c == 0) ? off1_max_buckets : off_max_buckets; }
+
 static inline const table *len1_off_table(const len1_tables *t, uint32_t length)
 {
-    return (length == 1) ? &t->off1 : &t->off[len_ctx(length)];
+    return &t->off[off_ctx(length)];
 }
 
 uint32_t len1_transmit_bits(const len1_tables *t);

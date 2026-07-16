@@ -14,29 +14,16 @@
 
 enum {
     v6_iterations      = 8,     // parse <-> table refinement rounds
-    v6_len_max_buckets = 16,    // unary length index, indices 0..15
+    v6_len_max_buckets = 10,    // pinned unary length index, bare nibbles
+                                // (measured sweet spot: 8 +43, 9 +10,
+                                // 11 +3, 12 +3 vs 10)
 };
 
-// Per-context offset index geometry (len2 / len3 / len>=4)
-static const uint32_t v6_off_bits[num_contexts]    = {4, 4, 4};
-static const uint32_t v6_off_buckets[num_contexts] = {16, 16, 16};
-
-// seed_len1_tables assumes 4-bit/16-bucket contexts; reshape any
-// narrower context to a coarser full-coverage seed.
+// v6's tables: shared seed with the length index switched to unary
 static len1_tables v6_seed_tables(void)
 {
     len1_tables t = seed_len1_tables();
     t.len.index_bits = index_unary;
-    for (uint32_t s = 0; s < num_contexts; s++) {
-        if (v6_off_buckets[s] < off_max_buckets) {
-            t.off[s].num_buckets = v6_off_buckets[s];
-            t.off[s].index_bits = v6_off_bits[s];
-            for (uint32_t i = 0; i < v6_off_buckets[s]; i++) {
-                t.off[s].width[i] = 16 - v6_off_buckets[s] + i;
-            }
-            table_build_starts(&t.off[s]);
-        }
-    }
     return t;
 }
 
@@ -78,7 +65,7 @@ static uint32_t dp_pass(rc_view_bytes in, const matches *m, const len1_tables *t
         // Length-1 match edge: repeat the byte from near1[i] ago.
         uint32_t d = rc_array_u32_get(&m->near1, i);
         if (d != 0 && len1_cost < table_big_cost) {
-            uint32_t oc = table_cost(&tables->off1, d);
+            uint32_t oc = table_cost(&tables->off[0], d);
             if (oc < table_big_cost) {
                 uint32_t c = here + 1 + len1_cost + oc;
                 if (c < rc_array_u32_get(&cost, i + 1)) {
@@ -99,9 +86,9 @@ static uint32_t dp_pass(rc_view_bytes in, const matches *m, const len1_tables *t
         uint32_t end = rc_array_u32_get(&m->start, i + 1);
         for (uint32_t k = rc_array_u32_get(&m->start, i); k < end; k++) {
             token t = rc_array_token_get(&m->bp, k);
-            uint32_t off_cost[num_contexts];
+            uint32_t off_cost[num_off_tables];
             bool any_covered = false;
-            for (uint32_t c = 0; c < num_contexts; c++) {
+            for (uint32_t c = 1; c < num_off_tables; c++) {
                 off_cost[c] = table_cost(&tables->off[c], t.offset);
                 any_covered = any_covered || off_cost[c] < table_big_cost;
             }
@@ -113,7 +100,7 @@ static uint32_t dp_pass(rc_view_bytes in, const matches *m, const len1_tables *t
                 if (len_cost >= table_big_cost) {
                     break;
                 }
-                uint32_t oc = off_cost[len_ctx(len)];
+                uint32_t oc = off_cost[off_ctx(len)];
                 if (oc >= table_big_cost) {
                     continue;
                 }
@@ -165,11 +152,10 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
     rc_array_bytes_push(&out, (uint8_t)(in.num >> 8), arena);
 
     bitwriter w = bitwriter_make(&out, arena);
-    write_fixed_table(&w, &tables->off1, off1_max_buckets);
-    for (uint32_t c = 0; c < num_contexts; c++) {
-        write_fixed_table(&w, &tables->off[c], v6_off_buckets[c]);
+    for (uint32_t c = 0; c < num_off_tables; c++) {
+        write_fixed_table(&w, &tables->off[c], off_ctx_buckets(c));
     }
-    write_table(&w, &tables->len);
+    write_fixed_table(&w, &tables->len, v6_len_max_buckets);
 
     uint32_t total = 0;
     for (uint32_t k = 0; k < tokens.num; k++) {
@@ -230,13 +216,8 @@ v6_compress_result v6_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
         for (uint32_t v = 0; v <= max_match; v++) {
             rc_array_u32_set(&len_hist, v, 0);
         }
-        rc_array_u32 off1_hist = {0};
-        rc_array_u32_resize(&off1_hist, n + 1, &scratch);
-        for (uint32_t v = 0; v <= n; v++) {
-            rc_array_u32_set(&off1_hist, v, 0);
-        }
-        rc_array_u32 off_hist[num_contexts];
-        for (uint32_t c = 0; c < num_contexts; c++) {
+        rc_array_u32 off_hist[num_off_tables];
+        for (uint32_t c = 0; c < num_off_tables; c++) {
             off_hist[c] = (rc_array_u32) {0};
             rc_array_u32_resize(&off_hist[c], n + 1, &scratch);
             for (uint32_t v = 0; v <= n; v++) {
@@ -244,8 +225,7 @@ v6_compress_result v6_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             }
         }
         uint32_t max_len = 0;
-        uint32_t max_off1 = 0;
-        uint32_t max_off[num_contexts] = {0};
+        uint32_t max_off[num_off_tables] = {0};
         for (uint32_t k = 0; k < tokens.num; k++) {
             token t = rc_view_token_get(tokens.view, k);
             if (token_is_literal(t)) {
@@ -255,31 +235,21 @@ v6_compress_result v6_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             if (t.length > max_len) {
                 max_len = t.length;
             }
-            if (t.length == 1) {
-                rc_array_u32_set(&off1_hist, t.offset, rc_array_u32_get(&off1_hist, t.offset) + 1);
-                if (t.offset > max_off1) {
-                    max_off1 = t.offset;
-                }
-            }
-            else {
-                uint32_t c = len_ctx(t.length);
-                rc_array_u32_set(&off_hist[c], t.offset, rc_array_u32_get(&off_hist[c], t.offset) + 1);
-                if (t.offset > max_off[c]) {
-                    max_off[c] = t.offset;
-                }
+            uint32_t c = off_ctx(t.length);
+            rc_array_u32_set(&off_hist[c], t.offset, rc_array_u32_get(&off_hist[c], t.offset) + 1);
+            if (t.offset > max_off[c]) {
+                max_off[c] = t.offset;
             }
         }
 
         // ...and rebuild optimal tables for exactly that usage.
         len1_tables next = {
-            .off1 = optimize_table(off1_hist.view, 1, max_off1,
-                                   off1_index_bits, off1_max_buckets, scratch),
             .len = optimize_table(len_hist.view, 1, max_len, index_unary,
                                   v6_len_max_buckets, scratch),
         };
-        for (uint32_t c = 0; c < num_contexts; c++) {
+        for (uint32_t c = 0; c < num_off_tables; c++) {
             next.off[c] = optimize_table(off_hist[c].view, 1, max_off[c],
-                                         v6_off_bits[c], v6_off_buckets[c], scratch);
+                                         off_ctx_index_bits(c), off_ctx_buckets(c), scratch);
         }
 
         // len1_transmit_bits overstates the pinned-count headers by a
@@ -316,15 +286,13 @@ v6_decompress_result v6_decompress(rc_view_bytes comp, rc_arena *arena)
 
     bitreader r = bitreader_make(rc_view_bytes_get_tail(comp, 2));
     len1_tables tables;
-    tables.off1 = read_fixed_table(&r, 1, off1_index_bits, off1_max_buckets);
-    for (uint32_t c = 0; c < num_contexts; c++) {
-        tables.off[c] = read_fixed_table(&r, 1, v6_off_bits[c], v6_off_buckets[c]);
+    for (uint32_t c = 0; c < num_off_tables; c++) {
+        tables.off[c] = read_fixed_table(&r, 1, off_ctx_index_bits(c), off_ctx_buckets(c));
     }
-    table_result len_table = read_table(&r, 1, index_unary, v6_len_max_buckets);
-    if (!len_table.ok || r.fault != bit_fault_ok) {
+    tables.len = read_fixed_table(&r, 1, index_unary, v6_len_max_buckets);
+    if (r.fault != bit_fault_ok) {
         return fail();
     }
-    tables.len = len_table.table;
 
     rc_array_bytes out = {0};
     rc_array_bytes_reserve(&out, len ? len : 1, arena);
@@ -532,7 +500,7 @@ static uint32_t brute_suffix_bits(rc_view_bytes in, const matches *m,
     uint32_t d = rc_array_u32_get(&m->near1, pos);
     if (d != 0) {
         uint32_t lc = table_cost(&tables->len, 1);
-        uint32_t oc = table_cost(&tables->off1, d);
+        uint32_t oc = table_cost(&tables->off[0], d);
         if (lc < table_big_cost && oc < table_big_cost) {
             uint32_t c = 1 + lc + oc + brute_suffix_bits(in, m, tables, pos + 1);
             if (c < best) {
@@ -550,7 +518,7 @@ static uint32_t brute_suffix_bits(rc_view_bytes in, const matches *m,
             if (len_cost >= table_big_cost) {
                 break;
             }
-            uint32_t off_cost = table_cost(&tables->off[len_ctx(len)], t.offset);
+            uint32_t off_cost = table_cost(&tables->off[off_ctx(len)], t.offset);
             if (off_cost >= table_big_cost) {
                 continue;
             }

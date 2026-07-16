@@ -25,10 +25,26 @@
 #include "richc/test.h"
 #endif
 
+// Unified decompression result so bench can verify any codec by name
+typedef struct unpacked {
+    rc_array_bytes data;
+    bool           ok;
+} unpacked;
+
 typedef struct codec {
     const char *name;
     rc_array_bytes (*compress)(rc_view_bytes in, rc_arena *arena, rc_arena scratch);
+    unpacked (*decompress)(rc_view_bytes comp, rc_arena *arena);
 } codec;
+
+static unpacked decompress_wrap_v0(rc_view_bytes comp, rc_arena *arena)
+{
+    v0_decompress_result r = v0_decompress(comp, arena);
+    return (unpacked) {
+        .data = r.data,
+        .ok = r.ok,
+    };
+}
 
 static rc_array_bytes compress_v0(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
 {
@@ -37,15 +53,42 @@ static rc_array_bytes compress_v0(rc_view_bytes in, rc_arena *arena, rc_arena sc
 
 // A codec that cannot represent the input returns an empty array (a valid
 // stream is never smaller than the 2-byte header).
+static unpacked decompress_wrap_v1(rc_view_bytes comp, rc_arena *arena)
+{
+    v1_decompress_result r = v1_decompress(comp, arena);
+    return (unpacked) {
+        .data = r.data,
+        .ok = r.ok,
+    };
+}
+
 static rc_array_bytes compress_v1(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
 {
     v1_compress_result c = v1_compress(in, arena, scratch);
     return c.ok ? c.data : (rc_array_bytes) {0};
 }
 
+static unpacked decompress_wrap_v2(rc_view_bytes comp, rc_arena *arena)
+{
+    v2_decompress_result r = v2_decompress(comp, arena);
+    return (unpacked) {
+        .data = r.data,
+        .ok = r.ok,
+    };
+}
+
 static rc_array_bytes compress_v2(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
 {
     return v2_compress(in, arena, scratch).data;
+}
+
+static unpacked decompress_wrap_v3(rc_view_bytes comp, rc_arena *arena)
+{
+    v3_decompress_result r = v3_decompress(comp, arena);
+    return (unpacked) {
+        .data = r.data,
+        .ok = r.ok,
+    };
 }
 
 static rc_array_bytes compress_v3(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
@@ -54,9 +97,27 @@ static rc_array_bytes compress_v3(rc_view_bytes in, rc_arena *arena, rc_arena sc
     return c.ok ? c.data : (rc_array_bytes) {0};
 }
 
+static unpacked decompress_wrap_v4(rc_view_bytes comp, rc_arena *arena)
+{
+    v4_decompress_result r = v4_decompress(comp, arena);
+    return (unpacked) {
+        .data = r.data,
+        .ok = r.ok,
+    };
+}
+
 static rc_array_bytes compress_v4(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
 {
     return v4_compress(in, arena, scratch).data;
+}
+
+static unpacked decompress_wrap_v5(rc_view_bytes comp, rc_arena *arena)
+{
+    v5_decompress_result r = v5_decompress(comp, arena);
+    return (unpacked) {
+        .data = r.data,
+        .ok = r.ok,
+    };
 }
 
 static rc_array_bytes compress_v5(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
@@ -65,9 +126,27 @@ static rc_array_bytes compress_v5(rc_view_bytes in, rc_arena *arena, rc_arena sc
     return c.ok ? c.data : (rc_array_bytes) {0};
 }
 
+static unpacked decompress_wrap_v6(rc_view_bytes comp, rc_arena *arena)
+{
+    v6_decompress_result r = v6_decompress(comp, arena);
+    return (unpacked) {
+        .data = r.data,
+        .ok = r.ok,
+    };
+}
+
 static rc_array_bytes compress_v6(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
 {
     return v6_compress(in, arena, scratch).data;
+}
+
+static unpacked decompress_wrap_v7(rc_view_bytes comp, rc_arena *arena)
+{
+    v7_decompress_result r = v7_decompress(comp, arena);
+    return (unpacked) {
+        .data = r.data,
+        .ok = r.ok,
+    };
 }
 
 static rc_array_bytes compress_v7(rc_view_bytes in, rc_arena *arena, rc_arena scratch)
@@ -77,14 +156,14 @@ static rc_array_bytes compress_v7(rc_view_bytes in, rc_arena *arena, rc_arena sc
 }
 
 static const codec codecs[] = {
-    {.name = "v0", .compress = compress_v0},
-    {.name = "v1", .compress = compress_v1},
-    {.name = "v2", .compress = compress_v2},
-    {.name = "v3", .compress = compress_v3},
-    {.name = "v4", .compress = compress_v4},
-    {.name = "v5", .compress = compress_v5},
-    {.name = "v6", .compress = compress_v6},
-    {.name = "v7", .compress = compress_v7},
+    {.name = "v0", .compress = compress_v0, .decompress = decompress_wrap_v0},
+    {.name = "v1", .compress = compress_v1, .decompress = decompress_wrap_v1},
+    {.name = "v2", .compress = compress_v2, .decompress = decompress_wrap_v2},
+    {.name = "v3", .compress = compress_v3, .decompress = decompress_wrap_v3},
+    {.name = "v4", .compress = compress_v4, .decompress = decompress_wrap_v4},
+    {.name = "v5", .compress = compress_v5, .decompress = decompress_wrap_v5},
+    {.name = "v6", .compress = compress_v6, .decompress = decompress_wrap_v6},
+    {.name = "v7", .compress = compress_v7, .decompress = decompress_wrap_v7},
 };
 
 static const char *corpus_files[] = {
@@ -105,7 +184,7 @@ static int usage(void)
 {
     fprintf(stderr,
             "usage: beebcrunch <input> <output> -c <codec>\n"
-            "       beebcrunch bench [corpus_dir]\n"
+            "       beebcrunch bench [corpus_dir] [codec]\n"
             "       beebcrunch --test [prefix]\n"
             "codecs:");
     for (uint32_t k = 0; k < sizeof codecs / sizeof codecs[0]; k++) {
@@ -163,6 +242,63 @@ static int cmd_compress(const char *infile, const char *outfile, const char *cod
     rc_arena_deinit(&scratch);
     rc_arena_deinit(&arena);
     return 0;
+}
+
+// Bench a single codec by registry entry: one column, round-tripped.
+static int cmd_bench_one(const char *corpus_dir, const codec *c)
+{
+    rc_arena arena = rc_arena_make_default();
+    rc_arena scratch = rc_arena_make_default();
+    int rc = 0;
+
+    printf("%-22s %7s %8s %7s\n", "file", "orig", c->name, "ratio");
+
+    uint32_t total_orig = 0;
+    uint32_t total_packed = 0;
+    bool all_ok = true;
+    for (uint32_t k = 0; k < sizeof corpus_files / sizeof corpus_files[0]; k++) {
+        char path[512];
+        snprintf(path, sizeof path, "%s/%s", corpus_dir, corpus_files[k]);
+
+        uint32_t mark = arena.top;
+        rc_file_load_binary_result f =
+            rc_file_load_binary(rc_str_from_cstr(path), 0, &arena);
+        if (f.error != RC_FILE_OK) {
+            fprintf(stderr, "bench: cannot load %s\n", path);
+            rc = 1;
+            continue;
+        }
+
+        rc_array_bytes packed = c->compress(f.contents.view, &arena, scratch);
+        if (packed.num == 0) {
+            printf("%-22s %7u %8s %7s\n", corpus_files[k], f.contents.num, "-", "-");
+            all_ok = false;
+            rc_arena_free_to(&arena, mark);
+            continue;
+        }
+        unpacked d = c->decompress(packed.view, &arena);
+        if (!d.ok || d.data.num != f.contents.num
+            || memcmp(d.data.data, f.contents.data, f.contents.num) != 0) {
+            fprintf(stderr, "bench: %s failed %s round trip\n", path, c->name);
+            rc = 1;
+            continue;
+        }
+        printf("%-22s %7u %8u %6.1f%%\n", corpus_files[k], f.contents.num,
+               packed.num, 100.0 * packed.num / f.contents.num);
+        total_orig += f.contents.num;
+        total_packed += packed.num;
+        rc_arena_free_to(&arena, mark);
+    }
+
+    if (total_orig > 0) {
+        printf("%-22s %7u %8u %6.1f%%%s\n", "TOTAL", total_orig, total_packed,
+               100.0 * total_packed / total_orig,
+               all_ok ? "" : " (total excludes failed files)");
+    }
+
+    rc_arena_deinit(&scratch);
+    rc_arena_deinit(&arena);
+    return rc;
 }
 
 static int cmd_bench(const char *corpus_dir)
@@ -369,10 +505,23 @@ int main(int argc, char **argv)
         return cmd_test(argc == 3 ? argv[2] : "");
     }
     if (argc >= 2 && strcmp(argv[1], "bench") == 0) {
-        if (argc > 3) {
+        // bench [corpus_dir] [codec]; a lone argument that names a codec
+        // is the codec, with the default directory.
+        if (argc > 4) {
             return usage();
         }
-        return cmd_bench(argc == 3 ? argv[2] : "corpus");
+        const char *dir = "corpus";
+        const codec *only = NULL;
+        for (int a = 2; a < argc; a++) {
+            const codec *c = find_codec(argv[a]);
+            if (c) {
+                only = c;
+            }
+            else {
+                dir = argv[a];
+            }
+        }
+        return only ? cmd_bench_one(dir, only) : cmd_bench(dir);
     }
     if (argc == 5 && strcmp(argv[3], "-c") == 0) {
         return cmd_compress(argv[1], argv[2], argv[4]);
