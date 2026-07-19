@@ -171,15 +171,6 @@ table optimize_table(rc_view_u32 hist, uint32_t minval, uint32_t maxval,
 
 // ---- serialization ----
 
-uint32_t coding_transmit_bits(const coding_tables *t)
-{
-    uint32_t bits = table_transmit_bits(&t->len);
-    for (uint32_t c = 0; c < num_contexts; c++) {
-        bits += table_transmit_bits(&t->off[c]);
-    }
-    return bits;
-}
-
 void write_table(bitwriter *w, const table *t)
 {
     RC_ASSERT(t->num_buckets <= table_capacity);
@@ -215,7 +206,10 @@ void write_value(bitwriter *w, const table *t, uint32_t v)
 {
     uint32_t i = table_index(t, v);
     RC_ASSERT(i != RC_INDEX_NONE);
-    if (t->index_bits == index_unary) {
+    if (t->index_bits) {
+        bitwriter_bits(w, i, t->index_bits);
+    }
+    else {
         // Unary: i zeros then a terminating 1, in <= 8-bit pieces.
         uint32_t zeros = i;
         while (zeros >= 8) {
@@ -224,44 +218,7 @@ void write_value(bitwriter *w, const table *t, uint32_t v)
         }
         bitwriter_bits(w, 1, zeros + 1);
     }
-    else if (t->index_bits) {
-        bitwriter_bits(w, i, t->index_bits);
-    }
-    else {
-        bitwriter_gamma(w, i + 1);
-    }
     write_extra(w, v - t->start[i], t->width[i]);
-}
-
-void write_coding_tables(bitwriter *w, const coding_tables *t)
-{
-    for (uint32_t c = 0; c < num_contexts; c++) {
-        write_table(w, &t->off[c]);
-    }
-    write_table(w, &t->len);
-}
-
-void write_fixed_table(bitwriter *w, const table *t, uint32_t count)
-{
-    RC_ASSERT(t->num_buckets <= count);
-    for (uint32_t i = 0; i < count; i++) {
-        bitwriter_bits(w, i < t->num_buckets ? t->width[i] : 0, 4);
-    }
-}
-
-table read_fixed_table(bitreader *r, uint32_t minval, uint32_t index_bits,
-                       uint32_t count)
-{
-    table t = {
-        .minval = minval,
-        .num_buckets = count,
-        .index_bits = index_bits,
-    };
-    for (uint32_t i = 0; i < count; i++) {
-        t.width[i] = bitreader_bits(r, 4);
-    }
-    table_build_starts(&t);
-    return t;
 }
 
 table_result read_table(bitreader *r, uint32_t minval, uint32_t index_bits,
@@ -287,10 +244,36 @@ table_result read_table(bitreader *r, uint32_t minval, uint32_t index_bits,
     return res;
 }
 
+void write_fixed_table(bitwriter *w, const table *t, uint32_t count)
+{
+    RC_ASSERT(t->num_buckets <= count);
+    for (uint32_t i = 0; i < count; i++) {
+        bitwriter_bits(w, i < t->num_buckets ? t->width[i] : 0, 4);
+    }
+}
+
+table read_fixed_table(bitreader *r, uint32_t minval, uint32_t index_bits,
+                       uint32_t count)
+{
+    table t = {
+        .minval = minval,
+        .num_buckets = count,
+        .index_bits = index_bits,
+    };
+    for (uint32_t i = 0; i < count; i++) {
+        t.width[i] = bitreader_bits(r, 4);
+    }
+    table_build_starts(&t);
+    return t;
+}
+
 value_result read_value(bitreader *r, const table *t)
 {
     uint32_t i;
-    if (t->index_bits == index_unary) {
+    if (t->index_bits) {
+        i = bitreader_bits(r, t->index_bits);
+    }
+    else {
         // Count zeros to the terminating 1; past-the-end reads return
         // zeros, so bound the run (validated against num_buckets below).
         i = 0;
@@ -300,12 +283,6 @@ value_result read_value(bitreader *r, const table *t)
             }
         }
     }
-    else if (t->index_bits) {
-        i = bitreader_bits(r, t->index_bits);
-    }
-    else {
-        i = bitreader_gamma(r) - 1;
-    }
     if (i >= t->num_buckets) {
         return (value_result) {.value = 0, .ok = false};
     }
@@ -313,117 +290,6 @@ value_result read_value(bitreader *r, const table *t)
         .value = t->start[i] + read_extra(r, t->width[i]),
         .ok = true,
     };
-}
-
-coding_tables_result read_coding_tables(bitreader *r)
-{
-    coding_tables_result res = {.ok = true};
-    for (uint32_t c = 0; c < num_contexts; c++) {
-        table_result off = read_table(r, 1, off_index_bits, off_max_buckets);
-        if (!off.ok) {
-            res.ok = false;
-            return res;
-        }
-        res.tables.off[c] = off.table;
-    }
-    table_result len = read_table(r, 2, 0, len_max_buckets);
-    if (!len.ok) {
-        res.ok = false;
-        return res;
-    }
-    res.tables.len = len.table;
-    return res;
-}
-
-coding_tables seed_coding_tables(void)
-{
-    coding_tables t = {
-        .len = {
-            .minval = 2,
-            .num_buckets = 9,
-            .index_bits = 0,
-        },
-    };
-    for (uint32_t c = 0; c < num_contexts; c++) {
-        t.off[c] = (table) {
-            .minval = 1,
-            .num_buckets = 16,
-            .index_bits = off_index_bits,
-        };
-        for (uint32_t i = 0; i < t.off[c].num_buckets; i++) {
-            t.off[c].width[i] = i;
-        }
-        table_build_starts(&t.off[c]);
-    }
-    for (uint32_t i = 0; i < t.len.num_buckets; i++) {
-        t.len.width[i] = i;
-    }
-    table_build_starts(&t.len);
-    return t;
-}
-
-uint32_t len1_transmit_bits(const len1_tables *t)
-{
-    uint32_t bits = table_transmit_bits(&t->len);
-    for (uint32_t c = 0; c < num_off_tables; c++) {
-        bits += table_transmit_bits(&t->off[c]);
-    }
-    return bits;
-}
-
-void write_len1_tables(bitwriter *w, const len1_tables *t)
-{
-    for (uint32_t c = 0; c < num_off_tables; c++) {
-        write_table(w, &t->off[c]);
-    }
-    write_table(w, &t->len);
-}
-
-len1_tables_result read_len1_tables(bitreader *r)
-{
-    len1_tables_result res = {.ok = true};
-    for (uint32_t c = 0; c < num_off_tables; c++) {
-        table_result off = read_table(r, 1, off_ctx_index_bits(c), off_ctx_buckets(c));
-        if (!off.ok) {
-            res.ok = false;
-            return res;
-        }
-        res.tables.off[c] = off.table;
-    }
-    table_result len = read_table(r, 1, 0, len_max_buckets);
-    if (!len.ok) {
-        res.ok = false;
-        return res;
-    }
-    res.tables.len = len.table;
-    return res;
-}
-
-len1_tables seed_len1_tables(void)
-{
-    coding_tables base = seed_coding_tables();
-    len1_tables t = {
-        .off[0] = {
-            .minval = 1,
-            .num_buckets = 4,
-            .index_bits = off1_index_bits,
-            .width = {2, 3, 4, 5},
-        },
-        .len = {
-            .minval = 1,
-            .num_buckets = 9,
-            .index_bits = 0,
-        },
-    };
-    for (uint32_t c = 1; c < num_off_tables; c++) {
-        t.off[c] = base.off[c - 1];
-    }
-    for (uint32_t i = 0; i < t.len.num_buckets; i++) {
-        t.len.width[i] = i;
-    }
-    table_build_starts(&t.off[0]);
-    table_build_starts(&t.len);
-    return t;
 }
 
 // ------------------------------------------------------------------
@@ -475,11 +341,6 @@ RC_TEST(tables, starts_index_cost)
 
     // Gamma-indexed variant of the same shape.
     t.index_bits = 0;
-    RC_CHECK(table_cost(&t, 1), ==, 1u);            // gamma(1) + 0
-    RC_CHECK(table_cost(&t, 3), ==, 4u);            // gamma(2)=3 + 1
-    RC_CHECK(table_cost(&t, 9), ==, 8u);            // gamma(4)=5 + 3
-
-    t.index_bits = index_unary;
     RC_CHECK(table_cost(&t, 1), ==, 1u);            // unary 1 + 0
     RC_CHECK(table_cost(&t, 3), ==, 3u);            // unary 2 + 1
     RC_CHECK(table_cost(&t, 9), ==, 7u);            // unary 4 + 3
@@ -500,7 +361,7 @@ RC_TEST_STEP(tables, serialize_roundtrip, fix)
     write_table(&w, &t);
 
     bitreader r = bitreader_make(out.view);
-    table_result back = read_table(&r, 2, 0, len_max_buckets);
+    table_result back = read_table(&r, 2, 0, 31);
     RC_CHECK_TRUE(back.ok);
     RC_CHECK(r.fault, ==, bit_fault_ok);
     RC_CHECK(back.table.num_buckets, ==, t.num_buckets);
@@ -512,7 +373,7 @@ RC_TEST_STEP(tables, serialize_roundtrip, fix)
 
 RC_TEST_STEP(tables, rejects_oversized_count, fix)
 {
-    for (uint32_t count = off_max_buckets + 1; count <= 31; count++) {
+    for (uint32_t count = 16 + 1; count <= 31; count++) {
         rc_array_bytes out = {0};
         uint32_t mark = fix->a.top;
         bitwriter w = bitwriter_make(&out, &fix->a);
@@ -521,7 +382,7 @@ RC_TEST_STEP(tables, rejects_oversized_count, fix)
         bitwriter_bits(&w, 0, 8);
 
         bitreader r = bitreader_make(out.view);
-        RC_CHECK_FALSE(read_table(&r, 1, off_index_bits, off_max_buckets).ok);
+        RC_CHECK_FALSE(read_table(&r, 1, 4, 16).ok);
         rc_arena_free_to(&fix->a, mark);
     }
 }
@@ -560,7 +421,7 @@ RC_TEST_STEP(tables, unary_value_roundtrip, fix)
     table t = {
         .minval = 1,
         .num_buckets = 17,
-        .index_bits = index_unary,
+        .index_bits = 0,
     };
     table_build_starts(&t);
 

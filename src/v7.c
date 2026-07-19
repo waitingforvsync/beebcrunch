@@ -12,6 +12,7 @@
 #include "bitwriter.h"
 #include "frontier.h"
 #include "matches.h"
+#include "coding.h"
 #include "tables.h"
 
 enum {
@@ -31,13 +32,13 @@ enum {
 // optimizer can only improve per file.  No Elias gamma remains anywhere
 // in the v7 stream: unary indices, flat indices and raw bits only.
 typedef struct v7_tables {
-    len1_tables base;
+    coding_tables base;
     table       cnt[2];     // v7_lit / v7_match run counts, [1, 256]
 } v7_tables;
 
 static uint32_t v7_transmit_bits(const v7_tables *t)
 {
-    return len1_transmit_bits(&t->base)
+    return coding_transmit_bits(&t->base, 0)
          + table_transmit_bits(&t->cnt[v7_lit])
          + table_transmit_bits(&t->cnt[v7_match]);
 }
@@ -47,7 +48,7 @@ static table seed_cnt_table(void)
     table t = {
         .minval = 1,
         .num_buckets = 9,
-        .index_bits = index_unary,
+        .index_bits = 0,
     };
     for (uint32_t i = 0; i < t.num_buckets; i++) {
         t.width[i] = i;
@@ -56,14 +57,40 @@ static table seed_cnt_table(void)
     return t;
 }
 
-static v7_tables v7_seed_tables(void)
+// Variant 0 keeps geometric offsets (better overall in the block
+// chassis: cheap literals change which short matches the first parse
+// wants); variant 1 uses v6's steep offset seed - the winner differs
+// per file, so the encoder runs both.  Count seeds are steeper than
+// geometric in both variants: run length 1 dominates both block types
+// far beyond what a gamma prior implies.
+static v7_tables v7_seed_tables(uint32_t variant)
 {
     v7_tables t = {
-        .base = seed_len1_tables(),
+        .base = seed_coding_tables(0, 1),
     };
-    t.base.len.index_bits = index_unary;
-    t.cnt[v7_lit] = seed_cnt_table();
-    t.cnt[v7_match] = seed_cnt_table();
+    t.base.len.index_bits = 0;
+    if (variant == 1) {
+        static const uint32_t off_w[16] = {0, 0, 1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 12, 14, 15, 15};
+        static const uint32_t off1_w[4] = {1, 2, 4, 6};
+        for (uint32_t s = 1; s < num_contexts; s++) {
+            for (uint32_t i = 0; i < 16; i++) {
+                t.base.off[s].width[i] = off_w[i];
+            }
+            table_build_starts(&t.base.off[s]);
+        }
+        for (uint32_t i = 0; i < 4; i++) {
+            t.base.off[0].width[i] = off1_w[i];
+        }
+        table_build_starts(&t.base.off[0]);
+    }
+    static const uint32_t cnt_w[9] = {0, 0, 0, 1, 1, 2, 3, 5, 8};
+    for (uint32_t k = 0; k < 2; k++) {
+        t.cnt[k] = seed_cnt_table();
+        for (uint32_t i = 0; i < 9; i++) {
+            t.cnt[k].width[i] = cnt_w[i];
+        }
+        table_build_starts(&t.cnt[k]);
+    }
     return t;
 }
 
@@ -185,9 +212,9 @@ static v7_parse_result v7_parse(rc_view_bytes in, const matches *m,
                 uint32_t end = rc_array_u32_get(&m->start, i + 1);
                 for (uint32_t k = rc_array_u32_get(&m->start, i); k < end; k++) {
                     token t = rc_array_token_get(&m->bp, k);
-                    uint32_t off_cost[num_off_tables];
+                    uint32_t off_cost[num_contexts];
                     bool any_covered = false;
-                    for (uint32_t c = 1; c < num_off_tables; c++) {
+                    for (uint32_t c = 1; c < num_contexts; c++) {
                         off_cost[c] = table_cost(&tables->base.off[c], t.offset);
                         any_covered = any_covered || off_cost[c] < table_big_cost;
                     }
@@ -298,7 +325,7 @@ static uint32_t data_bits(rc_view_token tokens, const v7_tables *tables)
             }
             else {
                 bits += table_cost(&tables->base.len, t.length)
-                      + table_cost(len1_off_table(&tables->base, t.length), t.offset);
+                      + table_cost(coding_off_table(&tables->base, t.length), t.offset);
             }
         }
         i = j;
@@ -319,7 +346,7 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
     rc_array_bytes_push(&out, (uint8_t)(in.num >> 8), arena);
 
     bitwriter w = bitwriter_make(&out, arena);
-    for (uint32_t c = 0; c < num_off_tables; c++) {
+    for (uint32_t c = 0; c < num_contexts; c++) {
         write_fixed_table(&w, &tables->base.off[c], off_ctx_buckets(c));
     }
     write_fixed_table(&w, &tables->base.len, v7_len_buckets);
@@ -348,7 +375,7 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
                 // Length first (the decoder needs it to pick the offset
                 // context, including length 1), then the offset.
                 write_value(&w, &tables->base.len, t.length);
-                write_value(&w, len1_off_table(&tables->base, t.length), t.offset);
+                write_value(&w, coding_off_table(&tables->base, t.length), t.offset);
             }
             total += t.length;
         }
@@ -374,7 +401,7 @@ v7_compress_result v7_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             },
             .cnt = {{.minval = 1}, {.minval = 1}},
         };
-        for (uint32_t c = 0; c < num_off_tables; c++) {
+        for (uint32_t c = 0; c < num_contexts; c++) {
             empty.base.off[c] = (table) {.minval = 1};
         }
         return (v7_compress_result) {
@@ -404,10 +431,15 @@ v7_compress_result v7_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
     // 256 positions in a file are first occurrences of their byte, so a
     // 257-literal run always contains a length-1 escape, and every input
     // is representable.
-    for (uint32_t attempt = 0; attempt < 2 && best_bits == UINT32_MAX; attempt++) {
-    v7_tables tables = v7_seed_tables();
-    if (attempt == 1) {
-        for (uint32_t i = 0; i < off1_max_buckets; i++) {
+    // Attempts 0 and 1 are the seed portfolio (both always run); the
+    // full-coverage escape seed runs only if neither parsed at all.
+    for (uint32_t attempt = 0; attempt < 3; attempt++) {
+    if (attempt == 2 && best_bits != UINT32_MAX) {
+        break;
+    }
+    v7_tables tables = v7_seed_tables(attempt == 1);
+    if (attempt == 2) {
+        for (uint32_t i = 0; i < off_ctx_buckets(0); i++) {
             tables.base.off[0].width[i] = 15;
         }
         table_build_starts(&tables.base.off[0]);
@@ -426,8 +458,8 @@ v7_compress_result v7_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
         for (uint32_t v = 0; v <= max_match; v++) {
             rc_array_u32_set(&len_hist, v, 0);
         }
-        rc_array_u32 off_hist[num_off_tables];
-        for (uint32_t c = 0; c < num_off_tables; c++) {
+        rc_array_u32 off_hist[num_contexts];
+        for (uint32_t c = 0; c < num_contexts; c++) {
             off_hist[c] = (rc_array_u32) {0};
             rc_array_u32_resize(&off_hist[c], n + 1, &scratch);
             for (uint32_t v = 0; v <= n; v++) {
@@ -443,7 +475,7 @@ v7_compress_result v7_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             }
         }
         uint32_t max_len = 0;
-        uint32_t max_off[num_off_tables] = {0};
+        uint32_t max_off[num_contexts] = {0};
         uint32_t max_cnt[2] = {0};
 
         // Block runs for the count histograms.
@@ -482,17 +514,17 @@ v7_compress_result v7_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
         // ...and rebuild optimal tables for exactly that usage.
         v7_tables next = {
             .base = {
-                .len = optimize_table(len_hist.view, 1, max_len, index_unary,
+                .len = optimize_table(len_hist.view, 1, max_len, 0,
                                       v7_len_buckets, scratch),
             },
         };
-        for (uint32_t c = 0; c < num_off_tables; c++) {
+        for (uint32_t c = 0; c < num_contexts; c++) {
             next.base.off[c] = optimize_table(off_hist[c].view, 1, max_off[c],
                                               off_ctx_index_bits(c), off_ctx_buckets(c), scratch);
         }
         for (uint32_t t = 0; t < 2; t++) {
             next.cnt[t] = optimize_table(cnt_hist[t].view, 1, max_cnt[t],
-                                         index_unary, v7_cnt_buckets, scratch);
+                                         0, v7_cnt_buckets, scratch);
         }
 
         // v7_transmit_bits overstates the pinned-count offset headers by
@@ -545,12 +577,12 @@ v7_decompress_result v7_decompress(rc_view_bytes comp, rc_arena *arena)
 
     bitreader r = bitreader_make(rc_view_bytes_get_tail(comp, 2));
     v7_tables tables;
-    for (uint32_t c = 0; c < num_off_tables; c++) {
+    for (uint32_t c = 0; c < num_contexts; c++) {
         tables.base.off[c] = read_fixed_table(&r, 1, off_ctx_index_bits(c), off_ctx_buckets(c));
     }
-    tables.base.len = read_fixed_table(&r, 1, index_unary, v7_len_buckets);
+    tables.base.len = read_fixed_table(&r, 1, 0, v7_len_buckets);
     for (uint32_t t = 0; t < 2; t++) {
-        tables.cnt[t] = read_fixed_table(&r, 1, index_unary, v7_cnt_buckets);
+        tables.cnt[t] = read_fixed_table(&r, 1, 0, v7_cnt_buckets);
     }
     if (r.fault != bit_fault_ok) {
         return fail();
@@ -593,7 +625,7 @@ v7_decompress_result v7_decompress(rc_view_bytes comp, rc_arena *arena)
             if (!length.ok || r.fault != bit_fault_ok) {
                 return fail();
             }
-            value_result offset = read_value(&r, len1_off_table(&tables.base, length.value));
+            value_result offset = read_value(&r, coding_off_table(&tables.base, length.value));
             if (!offset.ok || r.fault != bit_fault_ok) {
                 return fail();
             }
@@ -896,9 +928,9 @@ static void brute_parses(rc_view_bytes in, const matches *m,
 
 RC_TEST_STEP(v7, parse_is_exact_for_fixed_tables, fix)
 {
-    // Exactness holds under the seed: its count costs equal Elias gamma,
-    // monotone in run length, so frontier dominance is sound.
-    v7_tables tables = v7_seed_tables();
+    // Exactness holds under the seed: its count costs are monotone in
+    // run length, so frontier dominance is sound.
+    v7_tables tables = v7_seed_tables(0);
     uint32_t seed = 0xFEED;
     for (uint32_t trial = 0; trial < 60; trial++) {
         uint8_t data[12];

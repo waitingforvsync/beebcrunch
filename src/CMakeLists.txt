@@ -1,6 +1,7 @@
 add_executable(beebcrunch
     bitreader.c
     bitwriter.c
+    coding.c
     frontier.c
     main.c
     matches.c
@@ -16,6 +17,7 @@ add_executable(beebcrunch
     bitreader.h
     bitutils.h
     bitwriter.h
+    coding.h
     frontier.h
     matches.h
     tables.h

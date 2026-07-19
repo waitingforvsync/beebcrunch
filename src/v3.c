@@ -12,6 +12,7 @@
 #include "bitwriter.h"
 #include "frontier.h"
 #include "matches.h"
+#include "coding.h"
 #include "tables.h"
 
 enum {
@@ -100,7 +101,7 @@ static v3_parse_result v3_parse(rc_view_bytes in, const matches *m,
                     token t = rc_array_token_get(&m->bp, k);
                     uint32_t off_cost[num_contexts];
                     bool any_covered = false;
-                    for (uint32_t c = 0; c < num_contexts; c++) {
+                    for (uint32_t c = 1; c < num_contexts; c++) {
                         off_cost[c] = table_cost(&tables->off[c], t.offset);
                         any_covered = any_covered || off_cost[c] < table_big_cost;
                     }
@@ -112,7 +113,7 @@ static v3_parse_result v3_parse(rc_view_bytes in, const matches *m,
                         if (len_cost >= table_big_cost) {
                             break;
                         }
-                        uint32_t oc = off_cost[len_ctx(len)];
+                        uint32_t oc = off_cost[off_ctx(len)];
                         if (oc >= table_big_cost) {
                             continue;
                         }
@@ -205,7 +206,7 @@ static uint32_t data_bits(rc_view_token tokens, const coding_tables *tables)
             }
             else {
                 bits += table_cost(&tables->len, t.length)
-                      + table_cost(&tables->off[len_ctx(t.length)], t.offset);
+                      + table_cost(&tables->off[off_ctx(t.length)], t.offset);
             }
         }
         i = j;
@@ -226,7 +227,7 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
     rc_array_bytes_push(&out, (uint8_t)(in.num >> 8), arena);
 
     bitwriter w = bitwriter_make(&out, arena);
-    write_coding_tables(&w, tables);
+    write_coding_tables(&w, tables, 1);
 
     // Emit maximal same-type runs: gamma(count) then the tokens.  The
     // parse guarantees the block cap and the leading literal block.
@@ -250,7 +251,7 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
                 // Length first (the decoder needs it to pick the offset
                 // context), then the offset through that context's table.
                 write_value(&w, &tables->len, t.length);
-                write_value(&w, &tables->off[len_ctx(t.length)], t.offset);
+                write_value(&w, &tables->off[off_ctx(t.length)], t.offset);
             }
             total += t.length;
         }
@@ -273,7 +274,7 @@ v3_compress_result v3_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
         coding_tables empty = {
             .len = {.minval = 2},
         };
-        for (uint32_t c = 0; c < num_contexts; c++) {
+        for (uint32_t c = 1; c < num_contexts; c++) {
             empty.off[c] = (table) {.minval = 1};
         }
         return (v3_compress_result) {
@@ -299,7 +300,7 @@ v3_compress_result v3_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
     // tables, rebuild optimal tables from the parse's histograms, keep
     // the best true size.  Refined tables can shrink coverage enough to
     // make a later parse fail; the best earlier result still stands.
-    coding_tables tables = seed_coding_tables();
+    coding_tables tables = seed_coding_tables(1, 2);
     for (uint32_t iter = 0; iter < v3_iterations; iter++) {
         uint32_t mark = scratch.top;
         v3_parse_result parsed = v3_parse(in, &m, &tables, true, &scratch);
@@ -315,7 +316,7 @@ v3_compress_result v3_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             rc_array_u32_set(&len_hist, v, 0);
         }
         rc_array_u32 off_hist[num_contexts];
-        for (uint32_t c = 0; c < num_contexts; c++) {
+        for (uint32_t c = 1; c < num_contexts; c++) {
             off_hist[c] = (rc_array_u32) {0};
             rc_array_u32_resize(&off_hist[c], n + 1, &scratch);
             for (uint32_t v = 0; v <= n; v++) {
@@ -329,7 +330,7 @@ v3_compress_result v3_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             if (t.length == 1) {
                 continue;
             }
-            uint32_t c = len_ctx(t.length);
+            uint32_t c = off_ctx(t.length);
             rc_array_u32_set(&len_hist, t.length, rc_array_u32_get(&len_hist, t.length) + 1);
             rc_array_u32_set(&off_hist[c], t.offset, rc_array_u32_get(&off_hist[c], t.offset) + 1);
             if (t.length > max_len) {
@@ -345,12 +346,12 @@ v3_compress_result v3_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             .len = optimize_table(len_hist.view, 2, max_len, 0,
                                   len_max_buckets, scratch),
         };
-        for (uint32_t c = 0; c < num_contexts; c++) {
+        for (uint32_t c = 1; c < num_contexts; c++) {
             next.off[c] = optimize_table(off_hist[c].view, 1, max_off[c],
                                          off_index_bits, off_max_buckets, scratch);
         }
 
-        uint32_t bits = coding_transmit_bits(&next) + data_bits(parsed.tokens.view, &next);
+        uint32_t bits = coding_transmit_bits(&next, 1) + data_bits(parsed.tokens.view, &next);
         if (bits < best_bits) {
             best_bits = bits;
             best_num = parsed.tokens.num;
@@ -395,7 +396,7 @@ v3_decompress_result v3_decompress(rc_view_bytes comp, rc_arena *arena)
                  | ((uint32_t)rc_view_bytes_get(comp, 1) << 8);
 
     bitreader r = bitreader_make(rc_view_bytes_get_tail(comp, 2));
-    coding_tables_result tables = read_coding_tables(&r);
+    coding_tables_result tables = read_coding_tables(&r, 1, 2);
     if (!tables.ok || r.fault != bit_fault_ok) {
         return fail();
     }
@@ -434,7 +435,7 @@ v3_decompress_result v3_decompress(rc_view_bytes comp, rc_arena *arena)
             if (!length.ok || r.fault != bit_fault_ok) {
                 return fail();
             }
-            value_result offset = read_value(&r, &tables.tables.off[len_ctx(length.value)]);
+            value_result offset = read_value(&r, &tables.tables.off[off_ctx(length.value)]);
             if (!offset.ok || r.fault != bit_fault_ok) {
                 return fail();
             }
@@ -688,7 +689,7 @@ static void brute_parses(rc_view_bytes in, const matches *m,
         token t = rc_array_token_get(&m->bp, k);
         for (uint32_t len = lo + 1; len <= t.length; len++) {
             if (table_cost(&tables->len, len) >= table_big_cost
-                || table_cost(&tables->off[len_ctx(len)], t.offset) >= table_big_cost) {
+                || table_cost(&tables->off[off_ctx(len)], t.offset) >= table_big_cost) {
                 continue;
             }
             rc_array_token_push(seq, (token) {
@@ -704,7 +705,7 @@ static void brute_parses(rc_view_bytes in, const matches *m,
 
 RC_TEST_STEP(v3, parse_is_exact_for_fixed_tables, fix)
 {
-    coding_tables tables = seed_coding_tables();
+    coding_tables tables = seed_coding_tables(1, 2);
     uint32_t seed = 0xFEED;
     for (uint32_t trial = 0; trial < 60; trial++) {
         uint8_t data[12];

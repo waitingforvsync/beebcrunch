@@ -10,20 +10,115 @@
 #include "bitreader.h"
 #include "bitwriter.h"
 #include "matches.h"
+#include "coding.h"
 #include "tables.h"
 
 enum {
     v6_iterations      = 8,     // parse <-> table refinement rounds
+    v6_num_off         = 3,     // offset contexts: len 1 / 2 / >= 3 - the
+                                // len3 split measured -12 to drop here
+                                // (v7 measured the opposite and keeps 4)
     v6_len_max_buckets = 10,    // pinned unary length index, bare nibbles
                                 // (measured sweet spot: 8 +43, 9 +10,
                                 // 11 +3, 12 +3 vs 10)
 };
 
-// v6's tables: shared seed with the length index switched to unary
-static len1_tables v6_seed_tables(void)
+// Merged offset context for v6: length 1 / 2 / >= 3
+static uint32_t v6_off_ctx(uint32_t length)
 {
-    len1_tables t = seed_len1_tables();
-    t.len.index_bits = index_unary;
+    return (length == 1) ? 0 : (length == 2) ? 1 : 2;
+}
+
+static const table *v6_off_table(const coding_tables *t, uint32_t length)
+{
+    return &t->off[v6_off_ctx(length)];
+}
+
+// Seed shape families per table kind, all full-coverage.  Seed shape
+// picks the fixpoint basin and the winner differs per file, so the
+// encoder runs a portfolio of shape combinations and keeps the best.
+enum {
+    shape_geo     = 0,  // one bucket per octave
+    shape_steep   = 1,  // finer buckets at small values
+    shape_flat    = 2,  // equal widths
+    shape_shallow = 3,  // coarser at small values
+    shape_inv     = 4,  // reversed geometric
+    num_shapes    = 5,
+};
+
+static const uint32_t seed_off16[num_shapes][16] = {
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+    {0, 0, 1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 12, 14, 15, 15},
+    {12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12},
+    {0, 2, 4, 6, 8, 10, 12, 14, 15, 15, 15, 15, 15, 15, 15, 15},
+    {15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0},
+};
+static const uint32_t seed_off1[num_shapes][4] = {
+    {2, 3, 4, 5},
+    {1, 2, 4, 6},
+    {4, 4, 4, 4},
+    {2, 4, 6, 8},
+    {5, 4, 3, 2},
+};
+enum {
+    v6_len_seed_n = 9,      // length seed buckets (kept == the pin when swept)
+};
+
+static const uint32_t seed_len[num_shapes][v6_len_seed_n] = {
+    {0, 1, 2, 3, 4, 5, 6, 7, 8},
+    {0, 0, 0, 1, 1, 2, 3, 5, 8},
+    {5, 5, 5, 5, 5, 5, 5, 5, 5},
+    {1, 2, 3, 4, 5, 6, 7, 8, 8},
+    {8, 5, 3, 2, 1, 1, 0, 0, 0},
+};
+
+// One shape per table: length, len-1 offsets, len2 offsets, len>=3
+typedef struct seed_combo {
+    uint8_t len_s;
+    uint8_t off1_s;
+    uint8_t off2_s;
+    uint8_t off3_s;
+} seed_combo;
+
+// Pruned from a 21-combo sweep (every uniform shape plus per-table
+// variations) to the combinations that won at least one corpus file;
+// the pruned portfolio reproduces the full sweep's total exactly.
+static const seed_combo v6_seed_combos[] = {
+    {shape_geo, shape_steep, shape_steep, shape_steep},
+    {shape_geo, shape_geo, shape_geo, shape_geo},
+    {shape_geo, shape_shallow, shape_shallow, shape_shallow},
+    {shape_steep, shape_steep, shape_steep, shape_steep},
+    {shape_shallow, shape_steep, shape_steep, shape_steep},
+    {shape_geo, shape_shallow, shape_steep, shape_steep},
+    {shape_geo, shape_steep, shape_shallow, shape_steep},
+    {shape_geo, shape_steep, shape_steep, shape_inv},
+};
+
+enum {
+    v6_num_seeds = sizeof v6_seed_combos / sizeof v6_seed_combos[0],
+};
+
+static coding_tables v6_seed_tables(uint32_t variant)
+{
+    const seed_combo *sc = &v6_seed_combos[variant];
+    coding_tables t = seed_coding_tables(0, 1);
+    t.len.index_bits = 0;
+    t.len.num_buckets = v6_len_seed_n;
+    for (uint32_t i = 0; i < v6_len_seed_n; i++) {
+        t.len.width[i] = seed_len[sc->len_s][i];
+    }
+    table_build_starts(&t.len);
+    for (uint32_t i = 0; i < 4; i++) {
+        t.off[0].width[i] = seed_off1[sc->off1_s][i];
+    }
+    table_build_starts(&t.off[0]);
+    for (uint32_t s = 1; s < v6_num_off; s++) {
+        const uint32_t *w = seed_off16[s == 1 ? sc->off2_s : sc->off3_s];
+        for (uint32_t i = 0; i < 16; i++) {
+            t.off[s].width[i] = w[i];
+        }
+        table_build_starts(&t.off[s]);
+    }
     return t;
 }
 
@@ -33,7 +128,7 @@ static len1_tables v6_seed_tables(void)
 // occurrence of the current byte (matches.near1) as a length-1 match.
 // Same exactness caveat as v2 over nearest-offset candidates.
 
-static uint32_t dp_pass(rc_view_bytes in, const matches *m, const len1_tables *tables,
+static uint32_t dp_pass(rc_view_bytes in, const matches *m, const coding_tables *tables,
                         rc_span_token arrival, rc_arena scratch)
 {
     uint32_t n = in.num;
@@ -86,9 +181,9 @@ static uint32_t dp_pass(rc_view_bytes in, const matches *m, const len1_tables *t
         uint32_t end = rc_array_u32_get(&m->start, i + 1);
         for (uint32_t k = rc_array_u32_get(&m->start, i); k < end; k++) {
             token t = rc_array_token_get(&m->bp, k);
-            uint32_t off_cost[num_off_tables];
+            uint32_t off_cost[v6_num_off];
             bool any_covered = false;
-            for (uint32_t c = 1; c < num_off_tables; c++) {
+            for (uint32_t c = 1; c < v6_num_off; c++) {
                 off_cost[c] = table_cost(&tables->off[c], t.offset);
                 any_covered = any_covered || off_cost[c] < table_big_cost;
             }
@@ -100,7 +195,7 @@ static uint32_t dp_pass(rc_view_bytes in, const matches *m, const len1_tables *t
                 if (len_cost >= table_big_cost) {
                     break;
                 }
-                uint32_t oc = off_cost[off_ctx(len)];
+                uint32_t oc = off_cost[v6_off_ctx(len)];
                 if (oc >= table_big_cost) {
                     continue;
                 }
@@ -123,7 +218,7 @@ static uint32_t dp_pass(rc_view_bytes in, const matches *m, const len1_tables *t
 
 // Exact stream bits of a token sequence under the given tables (flag bits
 // + literals + matches; excludes the table headers)
-static uint32_t data_bits(rc_view_token tokens, const len1_tables *tables)
+static uint32_t data_bits(rc_view_token tokens, const coding_tables *tables)
 {
     uint32_t bits = 0;
     for (uint32_t k = 0; k < tokens.num; k++) {
@@ -133,7 +228,7 @@ static uint32_t data_bits(rc_view_token tokens, const len1_tables *tables)
         }
         else {
             bits += 1 + table_cost(&tables->len, t.length)
-                  + table_cost(len1_off_table(tables, t.length), t.offset);
+                  + table_cost(v6_off_table(tables, t.length), t.offset);
         }
     }
     return bits;
@@ -142,7 +237,7 @@ static uint32_t data_bits(rc_view_token tokens, const len1_tables *tables)
 // ---- encoding ----
 
 static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
-                             const len1_tables *tables, rc_arena *arena)
+                             const coding_tables *tables, rc_arena *arena)
 {
     rc_array_bytes out = {0};
     rc_array_bytes_reserve(&out, 64, arena);
@@ -152,7 +247,7 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
     rc_array_bytes_push(&out, (uint8_t)(in.num >> 8), arena);
 
     bitwriter w = bitwriter_make(&out, arena);
-    for (uint32_t c = 0; c < num_off_tables; c++) {
+    for (uint32_t c = 0; c < v6_num_off; c++) {
         write_fixed_table(&w, &tables->off[c], off_ctx_buckets(c));
     }
     write_fixed_table(&w, &tables->len, v6_len_max_buckets);
@@ -169,7 +264,7 @@ static rc_array_bytes encode(rc_view_bytes in, rc_view_token tokens,
             // context, including length 1), then the offset.
             bitwriter_bits(&w, 1, 1);
             write_value(&w, &tables->len, t.length);
-            write_value(&w, len1_off_table(tables, t.length), t.offset);
+            write_value(&w, v6_off_table(tables, t.length), t.offset);
         }
         total += t.length;
     }
@@ -188,15 +283,17 @@ v6_compress_result v6_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
     // Find and cache all match candidates once (near1 included).
     matches m = scan_matches(in, &scratch);
 
-    // v2's refinement fixpoint, now over five tables.
-    len1_tables tables = v6_seed_tables();
-    len1_tables best_tables = tables;
+    // v2's refinement fixpoint, now over five tables, run once per seed
+    // variant with the best (tokens, tables) pair kept across both.
+    coding_tables best_tables;
     rc_array_token best_tokens = {0};
     uint32_t best_bits = UINT32_MAX;
 
     rc_array_token arrival = {0};
     rc_array_token_resize(&arrival, n + 1, &scratch);
 
+    for (uint32_t sv = 0; sv < v6_num_seeds; sv++) {
+    coding_tables tables = v6_seed_tables(sv);
     for (uint32_t iter = 0; iter < v6_iterations; iter++) {
         // Exact parse under the current tables.
         dp_pass(in, &m, &tables, arrival.span, scratch);
@@ -216,8 +313,8 @@ v6_compress_result v6_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
         for (uint32_t v = 0; v <= max_match; v++) {
             rc_array_u32_set(&len_hist, v, 0);
         }
-        rc_array_u32 off_hist[num_off_tables];
-        for (uint32_t c = 0; c < num_off_tables; c++) {
+        rc_array_u32 off_hist[v6_num_off];
+        for (uint32_t c = 0; c < v6_num_off; c++) {
             off_hist[c] = (rc_array_u32) {0};
             rc_array_u32_resize(&off_hist[c], n + 1, &scratch);
             for (uint32_t v = 0; v <= n; v++) {
@@ -225,7 +322,7 @@ v6_compress_result v6_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             }
         }
         uint32_t max_len = 0;
-        uint32_t max_off[num_off_tables] = {0};
+        uint32_t max_off[v6_num_off] = {0};
         for (uint32_t k = 0; k < tokens.num; k++) {
             token t = rc_view_token_get(tokens.view, k);
             if (token_is_literal(t)) {
@@ -235,7 +332,7 @@ v6_compress_result v6_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
             if (t.length > max_len) {
                 max_len = t.length;
             }
-            uint32_t c = off_ctx(t.length);
+            uint32_t c = v6_off_ctx(t.length);
             rc_array_u32_set(&off_hist[c], t.offset, rc_array_u32_get(&off_hist[c], t.offset) + 1);
             if (t.offset > max_off[c]) {
                 max_off[c] = t.offset;
@@ -243,24 +340,25 @@ v6_compress_result v6_compress(rc_view_bytes in, rc_arena *arena, rc_arena scrat
         }
 
         // ...and rebuild optimal tables for exactly that usage.
-        len1_tables next = {
-            .len = optimize_table(len_hist.view, 1, max_len, index_unary,
+        coding_tables next = {
+            .len = optimize_table(len_hist.view, 1, max_len, 0,
                                   v6_len_max_buckets, scratch),
         };
-        for (uint32_t c = 0; c < num_off_tables; c++) {
+        for (uint32_t c = 0; c < v6_num_off; c++) {
             next.off[c] = optimize_table(off_hist[c].view, 1, max_off[c],
                                          off_ctx_index_bits(c), off_ctx_buckets(c), scratch);
         }
 
-        // len1_transmit_bits overstates the pinned-count headers by a
+        // coding_transmit_bits overstates the pinned-count headers by a
         // constant 20 bits; a constant shift cannot change the argmin.
-        uint32_t bits = len1_transmit_bits(&next) + data_bits(tokens.view, &next);
+        uint32_t bits = coding_transmit_bits(&next, 0) + data_bits(tokens.view, &next);
         if (bits < best_bits) {
             best_bits = bits;
             best_tokens = tokens;
             best_tables = next;
         }
         tables = next;
+    }
     }
 
     return (v6_compress_result) {
@@ -285,11 +383,11 @@ v6_decompress_result v6_decompress(rc_view_bytes comp, rc_arena *arena)
                  | ((uint32_t)rc_view_bytes_get(comp, 1) << 8);
 
     bitreader r = bitreader_make(rc_view_bytes_get_tail(comp, 2));
-    len1_tables tables;
-    for (uint32_t c = 0; c < num_off_tables; c++) {
+    coding_tables tables;
+    for (uint32_t c = 0; c < v6_num_off; c++) {
         tables.off[c] = read_fixed_table(&r, 1, off_ctx_index_bits(c), off_ctx_buckets(c));
     }
-    tables.len = read_fixed_table(&r, 1, index_unary, v6_len_max_buckets);
+    tables.len = read_fixed_table(&r, 1, 0, v6_len_max_buckets);
     if (r.fault != bit_fault_ok) {
         return fail();
     }
@@ -314,7 +412,7 @@ v6_decompress_result v6_decompress(rc_view_bytes comp, rc_arena *arena)
             if (!length.ok || r.fault != bit_fault_ok) {
                 return fail();
             }
-            value_result offset = read_value(&r, len1_off_table(&tables, length.value));
+            value_result offset = read_value(&r, v6_off_table(&tables, length.value));
             if (!offset.ok || r.fault != bit_fault_ok) {
                 return fail();
             }
@@ -489,7 +587,7 @@ RC_TEST_STEP(v6, roundtrip_max_size, fix)
 // ---- parse exactness for fixed tables ----
 
 static uint32_t brute_suffix_bits(rc_view_bytes in, const matches *m,
-                                  const len1_tables *tables, uint32_t pos)
+                                  const coding_tables *tables, uint32_t pos)
 {
     if (pos == in.num) {
         return 0;
@@ -518,7 +616,7 @@ static uint32_t brute_suffix_bits(rc_view_bytes in, const matches *m,
             if (len_cost >= table_big_cost) {
                 break;
             }
-            uint32_t off_cost = table_cost(&tables->off[off_ctx(len)], t.offset);
+            uint32_t off_cost = table_cost(&tables->off[v6_off_ctx(len)], t.offset);
             if (off_cost >= table_big_cost) {
                 continue;
             }
@@ -535,7 +633,7 @@ static uint32_t brute_suffix_bits(rc_view_bytes in, const matches *m,
 
 RC_TEST_STEP(v6, parse_is_exact_for_fixed_tables, fix)
 {
-    len1_tables tables = v6_seed_tables();
+    coding_tables tables = v6_seed_tables(0);
     uint32_t seed = 0xFEED;
     for (uint32_t trial = 0; trial < 60; trial++) {
         uint8_t data[12];

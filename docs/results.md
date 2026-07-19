@@ -15,12 +15,12 @@ measured against exomizer raw, the reference target.
 | exomizer raw -c | 96434 | 57.8% | +0.2% |
 | v0 | 100588 | 60.3% | +4.6% |
 | v1 | 99576 | 59.7% | +3.5% |
-| v2 | 98526 | 59.1% | +2.4% |
-| v3 | 97685 | 58.6% | +1.5% |
-| v4 | 97815 | 58.6% | +1.7% |
-| v5 | 97906 | 58.7% | +1.8% |
-| v6 | 96869 | 58.1% | +0.7% |
-| v7 | 96874 | 58.1% | +0.7% |
+| v2 | 97951 | 58.7% | +1.8% |
+| v3 | 97134 | 58.2% | +1.0% |
+| v4 | 96899 | 58.1% | +0.7% |
+| v5 | 97076 | 58.2% | +0.9% |
+| v6 | 96626 | 57.9% | +0.4% |
+| v7 | 96810 | 58.0% | +0.6% |
 
 ## Per-file results
 
@@ -30,18 +30,18 @@ decoder format).
 
 | file | original | exo -c | v0 | v1 | v2 | v3 | v4 | v5 | v6 | v7 |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4464 | 4451 | 4445 | 4464 | 4375 | 4421 |
-| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7172 | 7160 | 7096 | 7120 | 7059 | 7065 |
-| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13074 | 12843 | 13035 | 12923 | 12942 | 12815 |
-| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5036 | 5013 | 4982 | 4991 | 4968 | 4980 |
-| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4444 | 4321 | 4450 | 4331 | 4440 | 4311 |
-| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3057 | 3014 | 3048 | 3006 | 3013 | 2980 |
-| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21198 | 21084 | 21045 | 21184 | 20777 | 20879 |
-| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6672 | 6661 | 6580 | 6619 | 6522 | 6537 |
-| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9147 | 9007 | 9025 | 9031 | 8961 | 8947 |
-| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11760 | 11625 | 11634 | 11638 | 11553 | 11529 |
-| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12502 | 12506 | 12475 | 12599 | 12259 | 12410 |
-| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **98526** | **97685** | **97815** | **97906** | **96869** | **96874** |
+| exile-title.bin | 8320 | 4341 | 4575 | 4567 | 4439 | 4426 | 4378 | 4426 | 4361 | 4411 |
+| droid-title.bin | 20480 | 6972 | 7615 | 7607 | 7137 | 7131 | 7061 | 7083 | 7043 | 7076 |
+| ravenskull-title.bin | 20480 | 12877 | 13333 | 13109 | 13000 | 12777 | 12945 | 12829 | 12871 | 12810 |
+| repton3-title.bin | 10240 | 4914 | 5212 | 5182 | 5011 | 4986 | 4970 | 4978 | 4952 | 4973 |
+| boomscreen.bin | 16000 | 4427 | 4725 | 4575 | 4430 | 4306 | 4445 | 4308 | 4425 | 4307 |
+| blurpscreen.bin | 8320 | 2982 | 3184 | 3142 | 3031 | 2988 | 3016 | 2980 | 3007 | 2977 |
+| exileb.bin | 24704 | 20744 | 21474 | 21278 | 21052 | 20941 | 20780 | 20940 | 20739 | 20869 |
+| chuckie.bin | 9984 | 6499 | 6712 | 6694 | 6636 | 6628 | 6525 | 6554 | 6500 | 6536 |
+| frak2.bin | 13567 | 8929 | 9225 | 9067 | 9105 | 8964 | 8964 | 8960 | 8938 | 8954 |
+| blurp.bin | 18331 | 11505 | 11903 | 11735 | 11713 | 11578 | 11553 | 11555 | 11531 | 11539 |
+| basic2.rom | 16384 | 12244 | 12630 | 12620 | 12397 | 12409 | 12262 | 12463 | 12259 | 12358 |
+| **TOTAL** | **166810** | **96434** | **100588** | **99576** | **97951** | **97134** | **96899** | **97076** | **96626** | **96810** |
 
 ## Exomizer 3.0.2 (raw and raw -c)
 
@@ -377,3 +377,120 @@ widths - remains fully adaptive per file.
   exactly 74 nibbles, read by one fixed loop.
 - v6 = 96869 and v7 = 96874 both carry zero per-table counts;
   best-of-both per file improves to 96542.
+
+## Gap decomposition probes (2026-07-16)
+
+Where do exomizer's remaining bytes come from, now the formats look
+alike?  Two suspects measured, one adopted:
+
+- The 256 length cap is NOT the gap: chained capped matches were counted
+  across the corpus - 5 occurrences, all in blurp.bin, ~14 bytes total.
+  BBC-sized data has almost no 256+ byte exact repeats, so exomizer's
+  16-bit lengths buy it nothing here.
+- ADOPTED: v6 merges len3 into a len >= 3 offset context (exomizer's
+  split, v6_num_off = 3): 96869 -> 96857.  The len3 context earned +136
+  in the v2 era but its 16-nibble header stopped paying once headers
+  and length indices got cheap.  v7 measured the opposite (+7) and
+  keeps 4 contexts.  v6's header is now a fixed 46 nibbles - SMALLER
+  than exomizer's 52.  Length pin 10 re-confirmed under 3 contexts
+  (9 +7, 11 +2).
+- Standing totals: v6 = 96857, v7 = 96874, best-of-both per file =
+  96529 (+331 vs exomizer raw, +95 vs raw -c).
+
+## Steeper offset seeds (2026-07-16)
+
+User suggestion: bias the seed to smaller widths at low indices.  The
+geometric seed gives one bucket per octave; a steeper offset seed
+({0,0,1,1,2,2,3,4,5,6,8,10,12,14,15,15}, len-1 context {1,2,4,6}) gives
+sub-octave resolution at short distances with the same full coverage.
+ADOPTED in v6: 96857 -> 96713 (-144), the largest single gain since the
+unary length index.  The first parse's histogram inherits the finer
+short-offset preferences and the fixpoint keeps the specialization -
+more evidence the seed's prior, not just its coverage, picks the basin.
+
+- Attribution: steep offsets alone -144; the steep len-1 seed is worth
+  213 of that (baseline off1 seed costs +213); steeper length seeds
+  measured WORSE (+114 to +258) - lengths keep the geometric ramp.
+  Even-steeper offset variants also lose (+21 to +167).
+- The earlier +-1-width restart experiment (-7) perturbed within the
+  octave family; changing the seed's SHAPE is what escapes the basin.
+- v6 = 96713: +0.5% vs exomizer raw, +279 vs raw -c.  Best-of-both with
+  v7 (still on the geometric seed) = 96469.  Applying the same seed
+  shape to v7 is the obvious next measurement.
+
+## v7 seed and count-table probes (2026-07-18)
+
+- v6's steep offset seed measured WORSE in v7 (+84): the chassis
+  economics differ - blocks make literals cheap, changing which short
+  matches the first parse prefers, and v7's geometric-offset basin
+  wins.  The two codecs now deliberately seed differently.
+- Steep COUNT seed adopted (-3): run length 1 dominates both block
+  types (67% / 54%) far beyond a gamma prior, so the count tables seed
+  {0,0,0,1,1,2,3,5,8}.  With their unary index, the old geometric seed
+  was exact gamma parity; the steeper shape starts closer to the truth.
+- Separate literal-run and match-run count tables are decisively
+  justified: forcing one shared table (learned jointly, still written
+  twice, isolating the modeling loss) costs +187, against ~50 bytes a
+  real merge would save in headers.  Net +137 for merging - the two
+  run-length distributions differ too much.
+- v7 = 96871.  Best-of-both per file = 96470 (+272 vs exomizer
+  raw, +36 vs raw -c).
+
+## Per-file seed portfolio (2026-07-18)
+
+Encoder-only, format unchanged, gains-only: each file's fixpoint now
+runs from both seed shapes (steep-offset and geometric) and the best
+(tokens, tables) pair is kept.  Seed shape picks the fixpoint basin and
+the winner differs per file - the earlier global adoptions were the
+majority vote, not unanimous.
+
+- v6: 96713 -> 96691 (-22).  v7: 96871 -> 96810 (-61) - the steep
+  offset seed that loses overall in the block chassis still wins on
+  several files.  Encode time doubles; v7's full-coverage escape seed
+  remains as a third attempt that only runs if neither variant parses.
+- v6 = 96691 (+0.5% vs exomizer raw, +257 vs raw -c), v7 = 96810.
+  Best-of-both per file = 96443: +245 vs exomizer raw,
+  +9 vs raw -c.
+
+## Wider seed portfolio for v6 (2026-07-19)
+
+Five seed shape families per table kind (geometric, steep, flat,
+shallow, inverted geometric) swept as 21 combinations - every uniform
+assignment plus per-table variations - with each file keeping its best.
+v6: 96691 -> 96626 (-65).  Nine different combinations win at least one
+file: basic2 prefers the plain geometric seed, boomscreen and blurp
+want an INVERTED len >= 3 offset seed, exileb and chuckie want a
+shallow len-1 seed, ravenskull shallow lengths.  Per-table shape
+matters, per-file - the basin structure is richer than any single
+global seed.  The portfolio is pruned to the 8 winning combinations
+(reproduces the sweep total exactly); flat never won anywhere.
+
+- v6 = 96626: +0.4% vs exomizer raw, +192 vs raw -c.  Best-of-both
+  with v7 = 96417: +219 vs raw, -17 vs raw -c - the
+  chassis bit now lands BELOW raw -c.
+- Build config fixed to Release (the cache had drifted to Debug;
+  ratios unaffected, benches ~10x faster - full 8-codec corpus bench
+  now 33 s).
+
+## Unary indices everywhere; gamma index mode removed (2026-07-19)
+
+Two structural decisions, per user direction.  First, the composition
+tidy-up: tables.* now holds only the single table struct and its
+machinery; the one shared composition (coding_tables: four offset
+contexts - length 1 / 2 / 3 / over 3 - plus a length table) lives in
+coding.h/.c, parameterized by first context and length minval.  There
+is no len1_tables type: length-1 is simply offset context 0, which
+v2/v3 never use.  The only remaining length-1 special case is the
+near1 candidate chain in matches.c, where it genuinely differs.  All
+eight codecs verified byte-identical through that refactor.
+
+Second, the Elias gamma bucket-index mode is gone: index_bits == 0 now
+means a unary index, everywhere, and the 31-bucket gamma length cap is
+replaced by a 16-bucket unary cap.  v2-v5 are deprecated (to be removed
+eventually) so their formats were retrofitted rather than preserved,
+and all four improved substantially: v2 97951 (-575), v3 97134 (-551),
+v4 96899 (-916), v5 97076 (-830).  v6/v7 already used unary and are
+unchanged (96626 / 96810).  Their columns above are re-measured under
+the new formats; the historical gamma-era numbers survive in the notes
+sections and in git history.  The decoder family now needs no Elias
+gamma reader anywhere in the table machinery.
